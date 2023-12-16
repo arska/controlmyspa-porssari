@@ -29,3 +29,7 @@ On porssari.fi, create a new device as type "PICO W" with the MAC address define
 You can then configure the "number of cheapest hours per day" to heat your pool to TEMP_HIGH, then let the pool cool down no lower than TEMP_LOW.
 
 The script provides a web server, by default at http://127.0.0.1:8080/, showing the porssari control instructions and current and set temperatures of the pool.
+
+## References
+
+Based on https://github.com/Porssari/PicoW-client/tree/main/release
