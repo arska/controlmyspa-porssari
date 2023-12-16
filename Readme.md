@@ -4,6 +4,12 @@ This project uses https://porssari.fi for time- and price-based temperature cont
 
 ## Usage
 
+Clone this git repo or pull the docker image:
+
+docker run -p 8080:8080 ghcr.io/arska/controlmyspa-porssari
+
+## Configuration
+
 Configure using environment variables, for local development you can put them into an ".env" file:
 
 TEMP_LOW=30 # temperature to set during "expensive" hours, when porssari says "off"
