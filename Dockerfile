@@ -13,6 +13,9 @@ WORKDIR /usr/src/app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+COPY get_certificate.py .
+RUN python get_certificate.py
+
 # copy application source code into container
 COPY app.py .
 
