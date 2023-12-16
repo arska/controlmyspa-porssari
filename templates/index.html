@@ -1,0 +1,19 @@
+<!doctype html>
+<title>Porssari controlmyspa</title>
+{% if porssari_config %}
+Porssari config:
+    <ul>
+    {% for key, value in porssari_config["Channel1"].items() %}
+        <li>
+        {% if key == current_hour|string %}<b>{% endif %}
+            {{ key }}: {{ value }}
+        {% if key == current_hour|string %}</b>{% endif %}
+        </li>
+    {% endfor %}
+    </ul>
+{% endif %}
+Controlmyspa state:
+<ul>
+    <li>Current temperature: {{ api.current_temp }}</li>
+    <li>Desired temperature: {{ api.desired_temp }}</li>
+</ul>

@@ -1,0 +1,6 @@
+controlmyspa
+flask
+apscheduler
+python-dotenv
+requests
+Flask-Caching
