@@ -47,6 +47,46 @@ Example porssari.fi config:
               'Time': '08:50:12',
               'Timestamp': '1702709412',
               'Timestamp_offset': '7200'}}
+
+And another example across midnight:
+{
+    "Metadata": {
+        "Mac": "A1B2C3D4E5F6",
+        "Channels": "1",
+        "Fetch_url": "https://api.porssari.fi/getcontrols.php",
+        "Date": "2023-12-16",
+        "Time": "21:26:00",
+        "Timestamp": "1702754760",
+        "Timestamp_offset": "7200",
+        "Hours_count": 24,
+    },
+    "Channel1": {
+        "21": "1",
+        "22": "1",
+        "23": "1",
+        "0": "0",
+        "1": "1",
+        "2": "1",
+        "3": "1",
+        "4": "1",
+        "5": "1",
+        "6": "1",
+        "7": "0",
+        "8": "0",
+        "9": "0",
+        "10": "0",
+        "11": "0",
+        "12": "0",
+        "13": "0",
+        "14": "0",
+        "15": "0",
+        "16": "0",
+        "17": "0",
+        "18": "0",
+        "19": "0",
+        "20": "0",
+    },
+}
 """
 
 
