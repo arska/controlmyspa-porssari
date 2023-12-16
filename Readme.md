@@ -1,6 +1,6 @@
 # Controlmyspa Pörssäri.fi
 
-This project uses https://porssari.fi for time- and price-based temperature control of https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
+This project uses https://porssari.fi for time- and price-based temperature control of [Balboa ControlMySpa](https://github.com/arska/controlmyspa) based Whirlpools.
 
 ## Usage
 
@@ -33,3 +33,4 @@ The script provides a web server, by default at http://127.0.0.1:8080/, showing 
 ## References
 
 Based on https://github.com/Porssari/PicoW-client/tree/main/release
+Uses the controlmyspa python module from the same author: https://github.com/arska/controlmyspa
