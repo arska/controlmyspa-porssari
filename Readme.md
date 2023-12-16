@@ -2,15 +2,20 @@
 
 This project uses https://porssari.fi for time- and price-based temperature control of https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 
-## Usage
+## Usage
 
 Configure using environment variables, for local development you can put them into an ".env" file:
 
 TEMP_LOW=30 # temperature to set during "expensive" hours, when porssari says "off"
+
 TEMP_HIGH=36 # temperature to set during "cheap" hours, when porssari says "on"
+
 TEMP_OVERRIDE=0 # override the temperature logic, for example, during vacation
+
 CONTROLMYSPA_USER=user@example.com # your username to log in to https://controlmyspa.com
+
 CONTROLMYSPA_PASS=SuperSecretPassword # your password to log in to https://controlmyspa.com
+
 PORSSARI_MAC=A1B2C3D4E5F6 # MAC address as registered on porssari.fi, for example, the MAC address of your controlmyspa gateway or laptop (needs to be unique on the porssari.fi platform)
 
 On porssari.fi, create a new device as type "PICO W" with the MAC address defined above. The script currently only supports one control channel.

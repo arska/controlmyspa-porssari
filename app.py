@@ -1,24 +1,25 @@
-import os
-import flask
-from apscheduler.schedulers.background import BackgroundScheduler
-from werkzeug.middleware.proxy_fix import ProxyFix
-import requests
-import pprint
-import logging
+"""
+This project uses https://porssari.fi for time- and price-based temperature control of
+https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
+"""
 import datetime
+import os
 from zoneinfo import ZoneInfo
-from dotenv import load_dotenv
-import controlmyspa
-from flask_caching import Cache
 
+import controlmyspa
+import flask
+import requests
+from apscheduler.schedulers.background import BackgroundScheduler
+from dotenv import load_dotenv
+from flask_caching import Cache
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
-
 scheduler = BackgroundScheduler()
-
-
+PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
 porssari_config = {}
+
 """
 Example porssari.fi config:
 {'Channel1': {'0': '0',
@@ -50,7 +51,9 @@ Example porssari.fi config:
 
 
 def initialize():
-    global scheduler
+    """
+    Initialize the scheduled jobs to poll configuration and run the control loop
+    """
     scheduler.start()
     scheduler.add_job(
         control,
@@ -74,17 +77,22 @@ def initialize():
 
 
 def update_porssari():
+    """
+    Fetch new configuration from porssari.fi
+    The configuration is cached in memory to be able to control the pool even if
+    porssari.fi was temporarily offline
+    """
     with APP.app_context():
-        API = "https://api.porssari.fi/getcontrols.php"
         new_config = requests.get(
-            API,
+            PORSSARI_API,
             {
                 "device_mac": os.getenv("PORSSARI_MAC"),
                 "client": "controlmyspa-porssari-1",
             },
+            timeout=10,
         )
-        global porssari_config
         try:
+            global porssari_config
             porssari_config = new_config.json()
             APP.logger.info("got porssari config: %s", porssari_config)
             # run the control loop once after we have a (new) config, especially on startup
@@ -94,7 +102,6 @@ def update_porssari():
             if not porssari_config:
                 # retry in a minute if we don't have any config at all
                 # else retry in the next normal 15m interval
-                global scheduler
                 scheduler.add_job(
                     update_porssari,
                     "date",
@@ -103,15 +110,17 @@ def update_porssari():
 
 
 def control():
-    global porssari_config
+    """
+    set the pool temperature according to the current our and porssari instructions
+    """
     if not porssari_config:
         APP.logger.error("no porssari config present, not controlling")
         return
     current_hour = datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour
     command = porssari_config.get("Channel1", {}).get(str(current_hour), "0")
-    if int(os.getenv("TEMP_OVERRIDE", 0)):
+    if int(os.getenv("TEMP_OVERRIDE", "0")):
         # if set, override temperature independent of hour control
-        set_temp(os.getenv("TEMP_OVERRIDE", 0))
+        set_temp(os.getenv("TEMP_OVERRIDE", "0"))
     elif command == "0":
         # low temp
         set_temp(os.getenv("TEMP_LOW"))
@@ -122,6 +131,10 @@ def control():
 
 
 def set_temp(temp):
+    """
+    Update the pool temperature.
+    Also fetch the current pool temperatures and cache them for 15 minutes.
+    """
     api = controlmyspa.ControlMySpa(
         os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
     )
@@ -135,17 +148,13 @@ def set_temp(temp):
     APP.logger.info("set desired temp %s", temp)
 
 
-def ping():
-    with APP.app_context():
-        global porssari_config
-        APP.logger.debug("ping %s", porssari_config)
-
-
 @APP.route("/")
-def hello():
-    global porssari_config
+def status():
+    """
+    WebGUI to show current porssari configuration and (cached) pool temperatures
+    """
     pool = cache.get("pool")
-    if pool == None:
+    if pool is None:
         api = controlmyspa.ControlMySpa(
             os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
         )
