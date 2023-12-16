@@ -17,7 +17,8 @@ COPY get_certificate.py .
 RUN python get_certificate.py
 
 # copy application source code into container
-COPY app.py templates ./
+COPY templates ./templates
+COPY app.py ./
 
 # drop root privileges when running the application
 USER 1001
