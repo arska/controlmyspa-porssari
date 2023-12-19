@@ -7,11 +7,15 @@
 apscheduler==3.10.4
     # via -r requirements.in
 blinker==1.7.0
-    # via flask
+    # via
+    #   flask
+    #   sentry-sdk
 cachelib==0.9.0
     # via flask-caching
 certifi==2023.11.17
-    # via requests
+    # via
+    #   requests
+    #   sentry-sdk
 charset-normalizer==3.3.2
     # via requests
 click==8.1.7
@@ -22,6 +26,7 @@ flask==3.0.0
     # via
     #   -r requirements.in
     #   flask-caching
+    #   sentry-sdk
 flask-caching==2.1.0
     # via -r requirements.in
 idna==3.6
@@ -33,6 +38,7 @@ jinja2==3.1.2
 markupsafe==2.1.3
     # via
     #   jinja2
+    #   sentry-sdk
     #   werkzeug
 python-dotenv==1.0.0
     # via -r requirements.in
@@ -42,11 +48,15 @@ requests==2.31.0
     # via
     #   -r requirements.in
     #   controlmyspa
+sentry-sdk[flask]==1.39.1
+    # via -r requirements.in
 six==1.16.0
     # via apscheduler
 tzlocal==5.2
     # via apscheduler
 urllib3==2.1.0
-    # via requests
+    # via
+    #   requests
+    #   sentry-sdk
 werkzeug==3.0.1
     # via flask

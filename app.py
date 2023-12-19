@@ -13,6 +13,9 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask_caching import Cache
 from werkzeug.middleware.proxy_fix import ProxyFix
+import sentry_sdk
+from sentry_sdk.integrations.flask import FlaskIntegration
+
 
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
@@ -122,52 +125,56 @@ def update_porssari():
     The configuration is cached in memory to be able to control the pool even if
     porssari.fi was temporarily offline
     """
-    with APP.app_context():
-        new_config = requests.get(
-            PORSSARI_API,
-            {
-                "device_mac": os.getenv("PORSSARI_MAC"),
-                "client": "controlmyspa-porssari-1",
-            },
-            timeout=10,
-        )
-        try:
-            global porssari_config
-            porssari_config = new_config.json()
-            APP.logger.info("got porssari config: %s", porssari_config)
-            # run the control loop once after we have a (new) config, especially on startup
-            control()
-        except requests.exceptions.JSONDecodeError:
-            APP.logger.error("porssari fetch failed: %s", new_config.content)
-            if not porssari_config:
-                # retry in a minute if we don't have any config at all
-                # else retry in the next normal 15m interval
-                scheduler.add_job(
-                    update_porssari,
-                    "date",
-                    run_date=(datetime.datetime.now() + datetime.timedelta(minutes=1)),
-                )
+    with sentry_sdk.start_transaction(op="task", name="Update Porssari"):
+        with APP.app_context():
+            new_config = requests.get(
+                PORSSARI_API,
+                {
+                    "device_mac": os.getenv("PORSSARI_MAC"),
+                    "client": "controlmyspa-porssari-1",
+                },
+                timeout=10,
+            )
+            try:
+                global porssari_config
+                porssari_config = new_config.json()
+                APP.logger.info("got porssari config: %s", porssari_config)
+                # run the control loop once after we have a (new) config, especially on startup
+                control()
+            except requests.exceptions.JSONDecodeError:
+                APP.logger.error("porssari fetch failed: %s", new_config.content)
+                if not porssari_config:
+                    # retry in a minute if we don't have any config at all
+                    # else retry in the next normal 15m interval
+                    scheduler.add_job(
+                        update_porssari,
+                        "date",
+                        run_date=(
+                            datetime.datetime.now() + datetime.timedelta(minutes=1)
+                        ),
+                    )
 
 
 def control():
     """
     set the pool temperature according to the current our and porssari instructions
     """
-    if not porssari_config:
-        APP.logger.error("no porssari config present, not controlling")
-        return
-    current_hour = datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour
-    command = porssari_config.get("Channel1", {}).get(str(current_hour), "0")
-    if int(os.getenv("TEMP_OVERRIDE", "0")):
-        # if set, override temperature independent of hour control
-        set_temp(os.getenv("TEMP_OVERRIDE", "0"))
-    elif command == "0":
-        # low temp
-        set_temp(os.getenv("TEMP_LOW"))
-    else:
-        # command = "1"
-        # high temp
-        set_temp(os.getenv("TEMP_HIGH"))
+    with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
+        if not porssari_config:
+            APP.logger.error("no porssari config present, not controlling")
+            return
+        current_hour = datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour
+        command = porssari_config.get("Channel1", {}).get(str(current_hour), "0")
+        if int(os.getenv("TEMP_OVERRIDE", "0")):
+            # if set, override temperature independent of hour control
+            set_temp(os.getenv("TEMP_OVERRIDE", "0"))
+        elif command == "0":
+            # low temp
+            set_temp(os.getenv("TEMP_LOW"))
+        else:
+            # command = "1"
+            # high temp
+            set_temp(os.getenv("TEMP_HIGH"))
 
 
 def set_temp(temp):
@@ -210,6 +217,11 @@ def status():
 
 if __name__ == "__main__":
     load_dotenv()
+    sentry_sdk.init(
+        os.environ.get("SENTRY_URL"),
+        integrations=[FlaskIntegration()],
+        enable_tracing=True,
+    )
     initialize()
     APP.wsgi_app = ProxyFix(APP.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
     APP.logger.setLevel("DEBUG")
