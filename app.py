@@ -182,17 +182,22 @@ def set_temp(temp):
     Update the pool temperature.
     Also fetch the current pool temperatures and cache them for 15 minutes.
     """
-    api = controlmyspa.ControlMySpa(
-        os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
-    )
-    pool = {"desired_temp": api.desired_temp, "current_temp": api.current_temp}
-    cache.set("pool", pool, timeout=15 * 60)
+    try:
+        api = controlmyspa.ControlMySpa(
+            os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
+        )
+        pool = {"desired_temp": api.desired_temp, "current_temp": api.current_temp}
+        cache.set("pool", pool, timeout=15 * 60)
 
-    APP.logger.info(
-        "current temp: %s, desired temp: %s", pool["current_temp"], pool["desired_temp"]
-    )
-    api.desired_temp = int(temp)
-    APP.logger.info("set desired temp %s", temp)
+        APP.logger.info(
+            "current temp: %s, desired temp: %s",
+            pool["current_temp"],
+            pool["desired_temp"],
+        )
+        api.desired_temp = int(temp)
+        APP.logger.info("set desired temp %s", temp)
+    except requests.exceptions.Timeout as exception:
+        APP.logger.error("controlmyspa API timeout: %s", exception)
 
 
 @APP.route("/")
