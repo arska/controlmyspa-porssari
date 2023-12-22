@@ -197,7 +197,10 @@ def set_temp(temp):
         api.desired_temp = int(temp)
         APP.logger.info("set desired temp %s", temp)
     except requests.exceptions.Timeout as exception:
-        APP.logger.error("controlmyspa API timeout: %s", exception)
+        APP.logger.info(
+            "ignoring controlmyspa API timeout, retrying next control loop: %s",
+            exception,
+        )
 
 
 @APP.route("/")
