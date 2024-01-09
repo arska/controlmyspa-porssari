@@ -196,9 +196,9 @@ def set_temp(temp):
         )
         api.desired_temp = int(temp)
         APP.logger.info("set desired temp %s", temp)
-    except requests.exceptions.Timeout as exception:
+    except requests.exceptions.RequestException as exception:
         APP.logger.info(
-            "ignoring controlmyspa API timeout, retrying next control loop: %s",
+            "ignoring controlmyspa API error, retrying next control loop: %s",
             exception,
         )
 
