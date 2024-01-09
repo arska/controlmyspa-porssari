@@ -52,6 +52,8 @@ sentry-sdk[flask]==1.39.1
     # via -r requirements.in
 six==1.16.0
     # via apscheduler
+tenacity==8.2.3
+    # via -r requirements.in
 tzlocal==5.2
     # via apscheduler
 urllib3==2.1.0

@@ -3,19 +3,20 @@ This project uses https://porssari.fi for time- and price-based temperature cont
 https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 """
 import datetime
+import logging
 import os
 from zoneinfo import ZoneInfo
 
 import controlmyspa
 import flask
 import requests
+import sentry_sdk
+import tenacity
 from apscheduler.schedulers.background import BackgroundScheduler
 from dotenv import load_dotenv
 from flask_caching import Cache
-from werkzeug.middleware.proxy_fix import ProxyFix
-import sentry_sdk
 from sentry_sdk.integrations.flask import FlaskIntegration
-
+from werkzeug.middleware.proxy_fix import ProxyFix
 
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
@@ -183,20 +184,32 @@ def set_temp(temp):
     Also fetch the current pool temperatures and cache them for 15 minutes.
     """
     try:
-        api = controlmyspa.ControlMySpa(
-            os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
-        )
-        pool = {"desired_temp": api.desired_temp, "current_temp": api.current_temp}
-        cache.set("pool", pool, timeout=15 * 60)
+        for attempt in tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type(
+                requests.exceptions.RequestException
+            ),
+            wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+            stop=tenacity.stop_after_attempt(5),
+            before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+        ):
+            with attempt:
+                api = controlmyspa.ControlMySpa(
+                    os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
+                )
+                pool = {
+                    "desired_temp": api.desired_temp,
+                    "current_temp": api.current_temp,
+                }
+                cache.set("pool", pool, timeout=15 * 60)
 
-        APP.logger.info(
-            "current temp: %s, desired temp: %s",
-            pool["current_temp"],
-            pool["desired_temp"],
-        )
-        api.desired_temp = int(temp)
-        APP.logger.info("set desired temp %s", temp)
-    except requests.exceptions.RequestException as exception:
+                APP.logger.info(
+                    "current temp: %s, desired temp: %s",
+                    pool["current_temp"],
+                    pool["desired_temp"],
+                )
+                api.desired_temp = int(temp)
+                APP.logger.info("set desired temp %s", temp)
+    except tenacity.RetryError as exception:
         APP.logger.info(
             "ignoring controlmyspa API error, retrying next control loop: %s",
             exception,
