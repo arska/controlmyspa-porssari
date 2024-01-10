@@ -207,8 +207,11 @@ def set_temp(temp):
                     pool["current_temp"],
                     pool["desired_temp"],
                 )
-                api.desired_temp = int(temp)
-                APP.logger.info("set desired temp %s", temp)
+                if pool["desired_temp"] != int(temp):
+                    api.desired_temp = int(temp)
+                    APP.logger.info("set desired temp %s", temp)
+                else:
+                    APP.logger.info("not changing desired temp %s", temp)
     except tenacity.RetryError as exception:
         APP.logger.info(
             "ignoring controlmyspa API error, retrying next control loop: %s",
