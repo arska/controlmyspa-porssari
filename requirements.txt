@@ -40,7 +40,7 @@ markupsafe==2.1.3
     #   jinja2
     #   sentry-sdk
     #   werkzeug
-python-dotenv==1.0.0
+python-dotenv==1.0.1
     # via -r requirements.in
 pytz==2023.3.post1
     # via apscheduler
