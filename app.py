@@ -24,6 +24,9 @@ scheduler = BackgroundScheduler()
 PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
 porssari_config = {}
 
+# set to datetime.datetime.now() to disable manual override on startup
+manual_override_endtime = datetime.datetime.fromtimestamp(0)
+
 """
 Example porssari.fi config:
 {'Channel1': {'0': '0',
@@ -128,37 +131,52 @@ def update_porssari():
     """
     with sentry_sdk.start_transaction(op="task", name="Update Porssari"):
         with APP.app_context():
-            new_config = requests.get(
-                PORSSARI_API,
-                {
-                    "device_mac": os.getenv("PORSSARI_MAC"),
-                    "client": "controlmyspa-porssari-1",
-                },
-                timeout=10,
-            )
-            try:
-                global porssari_config
-                porssari_config = new_config.json()
-                APP.logger.info("got porssari config: %s", porssari_config)
-                # run the control loop once after we have a (new) config, especially on startup
-                control()
-            except requests.exceptions.JSONDecodeError:
-                APP.logger.error("porssari fetch failed: %s", new_config.content)
-                if not porssari_config:
-                    # retry in a minute if we don't have any config at all
-                    # else retry in the next normal 15m interval
-                    scheduler.add_job(
-                        update_porssari,
-                        "date",
-                        run_date=(
-                            datetime.datetime.now() + datetime.timedelta(minutes=1)
-                        ),
-                    )
+            for attempt in tenacity.Retrying(
+                retry=tenacity.retry_if_exception_type(
+                    requests.exceptions.RequestException
+                ),
+                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+                stop=tenacity.stop_after_attempt(5),
+                before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+            ):
+                with attempt:
+                    try:
+                        new_config = requests.get(
+                            PORSSARI_API,
+                            {
+                                "device_mac": os.getenv("PORSSARI_MAC"),
+                                "client": "controlmyspa-porssari-1",
+                            },
+                            timeout=10,
+                        )
+                        global porssari_config
+                        porssari_config = new_config.json()
+                        APP.logger.info("got porssari config: %s", porssari_config)
+                        # run the control loop once after we have a (new) config,
+                        # especially on startup
+                        scheduler.add_job(
+                            control,
+                            "date",
+                            run_date=datetime.datetime.now(),
+                        )
+                    except tenacity.RetryError as exception:
+                        APP.logger.info("porssari fetch failed: %s", exception)
+                        if not porssari_config:
+                            # retry in a minute if we don't have any config at all
+                            # else retry in the next normal 15m interval
+                            scheduler.add_job(
+                                update_porssari,
+                                "date",
+                                run_date=(
+                                    datetime.datetime.now()
+                                    + datetime.timedelta(minutes=1)
+                                ),
+                            )
 
 
 def control():
     """
-    set the pool temperature according to the current our and porssari instructions
+    set the pool temperature according to the current hour and porssari instructions
     """
     with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
         if not porssari_config:
@@ -207,6 +225,37 @@ def set_temp(temp):
                     pool["current_temp"],
                     pool["desired_temp"],
                 )
+                if int(pool["desired_temp"]) != int(os.getenv("TEMP_HIGH")) and int(
+                    pool["desired_temp"]
+                ) != int(os.getenv("TEMP_LOW")):
+                    # somebody set a manual temperature through the pool controls
+                    # let's disable porssari control for 12h
+                    global manual_override_endtime
+                    if manual_override_endtime > datetime.datetime.now():
+                        # the end time is in the future -> let's wait
+                        APP.logger.info(
+                            "not changing the temperature until %s due to manual override",
+                            manual_override_endtime,
+                        )
+                        return
+
+                    if manual_override_endtime == datetime.datetime.fromtimestamp(0):
+                        # end time not set -> this is the first detection
+                        # of the manual override -> set the timer
+                        manual_override_endtime = (
+                            datetime.datetime.now() + datetime.timedelta(hours=12)
+                        )
+                        APP.logger.info(
+                            "manual override detected, not changing the temperature until %s",
+                            manual_override_endtime,
+                        )
+                        return
+
+                    # the manual override time expired
+                    # reset the timer for the next override
+                    manual_override_endtime = datetime.datetime.fromtimestamp(0)
+                    # take control over the temperature below
+
                 if pool["desired_temp"] != int(temp):
                     api.desired_temp = int(temp)
                     APP.logger.info("set desired temp %s", temp)
@@ -226,16 +275,32 @@ def status():
     """
     pool = cache.get("pool")
     if pool is None:
-        api = controlmyspa.ControlMySpa(
-            os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
-        )
-        pool = {"desired_temp": api.desired_temp, "current_temp": api.current_temp}
-        cache.set("pool", pool, timeout=15 * 60)
+        try:
+            for attempt in tenacity.Retrying(
+                retry=tenacity.retry_if_exception_type(
+                    requests.exceptions.RequestException
+                ),
+                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+                stop=tenacity.stop_after_attempt(5),
+                before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+            ):
+                with attempt:
+                    api = controlmyspa.ControlMySpa(
+                        os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
+                    )
+                    pool = {
+                        "desired_temp": api.desired_temp,
+                        "current_temp": api.current_temp,
+                    }
+                    cache.set("pool", pool, timeout=15 * 60)
+        except tenacity.RetryError:
+            pool = None
     return flask.render_template(
         "index.html",
         porssari_config=porssari_config,
         current_hour=datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour,
         api=pool,
+        manual_override_endtime=manual_override_endtime,
     )
 
 
@@ -245,6 +310,7 @@ if __name__ == "__main__":
         os.environ.get("SENTRY_URL"),
         integrations=[FlaskIntegration()],
         enable_tracing=True,
+        traces_sample_rate=0.8,
     )
     initialize()
     APP.wsgi_app = ProxyFix(APP.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
