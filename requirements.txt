@@ -22,7 +22,7 @@ click==8.1.7
     # via flask
 controlmyspa==1.0.11
     # via -r requirements.in
-flask==3.0.2
+flask==3.0.3
     # via
     #   -r requirements.in
     #   flask-caching
