@@ -2,6 +2,7 @@
 download the iot.controlmyspa.com intermediate TLS certificate
 during container build time
 """
+
 import controlmyspa
 import requests
 
