@@ -1,8 +1,11 @@
-"""
-This project uses https://porssari.fi for time- and price-based temperature control of
+"""Nordpool based temperature control for Balboa ControlMySpa Whirlpools.
+
+We use https://porssari.fi for time- and price-based temperature control of
 https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 """
+
 import datetime
+import json
 import logging
 import os
 from zoneinfo import ZoneInfo
@@ -98,9 +101,7 @@ And another example across midnight:
 
 
 def initialize():
-    """
-    Initialize the scheduled jobs to poll configuration and run the control loop
-    """
+    """Initialize scheduled jobs and run the control loop."""
     scheduler.start()
     scheduler.add_job(
         control,
@@ -124,60 +125,63 @@ def initialize():
 
 
 def update_porssari():
-    """
-    Fetch new configuration from porssari.fi
+    """Fetch new configuration from porssari.fi.
+
     The configuration is cached in memory to be able to control the pool even if
     porssari.fi was temporarily offline
     """
-    with sentry_sdk.start_transaction(op="task", name="Update Porssari"):
-        with APP.app_context():
-            for attempt in tenacity.Retrying(
-                retry=tenacity.retry_if_exception_type(
-                    requests.exceptions.RequestException
-                ),
-                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-                stop=tenacity.stop_after_attempt(5),
-                before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
-            ):
-                with attempt:
-                    try:
-                        new_config = requests.get(
-                            PORSSARI_API,
-                            {
-                                "device_mac": os.getenv("PORSSARI_MAC"),
-                                "client": "controlmyspa-porssari-1",
-                            },
-                            timeout=10,
-                        )
-                        global porssari_config
-                        porssari_config = new_config.json()
-                        APP.logger.info("got porssari config: %s", porssari_config)
-                        # run the control loop once after we have a (new) config,
-                        # especially on startup
+    with sentry_sdk.start_transaction(
+        op="task", name="Update Porssari"
+    ), APP.app_context():
+        for attempt in tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type(
+                requests.exceptions.RequestException
+            ),
+            wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+            stop=tenacity.stop_after_attempt(5),
+            before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+        ):
+            with attempt:
+                try:
+                    new_config = requests.get(
+                        PORSSARI_API,
+                        {
+                            "device_mac": os.getenv("PORSSARI_MAC"),
+                            "client": "controlmyspa-porssari-1",
+                        },
+                        timeout=10,
+                    )
+                    """
+                    2024-06-08: porssari started adding an extra newline before the JSON
+                    object, leading to JSON parse failure. stripping extra whitespace
+                    before JSON decoding here.
+                    """
+                    global porssari_config
+                    porssari_config = json.loads(new_config.text.strip())
+                    APP.logger.info("got porssari config: %s", porssari_config)
+                    # run the control loop once after we have a (new) config,
+                    # especially on startup
+                    scheduler.add_job(
+                        control,
+                        "date",
+                        run_date=datetime.datetime.now(),
+                    )
+                except tenacity.RetryError as exception:
+                    APP.logger.info("porssari fetch failed: %s", exception)
+                    if not porssari_config:
+                        # retry in a minute if we don't have any config at all
+                        # else retry in the next normal 15m interval
                         scheduler.add_job(
-                            control,
+                            update_porssari,
                             "date",
-                            run_date=datetime.datetime.now(),
+                            run_date=(
+                                datetime.datetime.now() + datetime.timedelta(minutes=1)
+                            ),
                         )
-                    except tenacity.RetryError as exception:
-                        APP.logger.info("porssari fetch failed: %s", exception)
-                        if not porssari_config:
-                            # retry in a minute if we don't have any config at all
-                            # else retry in the next normal 15m interval
-                            scheduler.add_job(
-                                update_porssari,
-                                "date",
-                                run_date=(
-                                    datetime.datetime.now()
-                                    + datetime.timedelta(minutes=1)
-                                ),
-                            )
 
 
 def control():
-    """
-    set the pool temperature according to the current hour and porssari instructions
-    """
+    """Set the pool temperature according to porssari instructions."""
     with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
         if not porssari_config:
             APP.logger.error("no porssari config present, not controlling")
@@ -197,8 +201,8 @@ def control():
 
 
 def set_temp(temp):
-    """
-    Update the pool temperature.
+    """Update the pool temperature.
+
     Also fetch the current pool temperatures and cache them for 15 minutes.
     """
     try:
@@ -270,9 +274,7 @@ def set_temp(temp):
 
 @APP.route("/")
 def status():
-    """
-    WebGUI to show current porssari configuration and (cached) pool temperatures
-    """
+    """WebGUI to show current porssari configuration and (cached) pool temperatures."""
     pool = cache.get("pool")
     if pool is None:
         try:
