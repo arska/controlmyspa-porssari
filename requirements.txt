@@ -20,7 +20,7 @@ charset-normalizer==3.3.2
     # via requests
 click==8.1.7
     # via flask
-controlmyspa==1.0.11
+controlmyspa==1.0.13
     # via -r requirements.in
 flask==3.0.3
     # via
