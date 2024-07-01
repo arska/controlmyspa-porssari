@@ -1,5 +1,21 @@
 <!doctype html>
-<title>Porssari controlmyspa</title>
+<head>
+    <title>Porssari controlmyspa</title>
+    <script src="https://durchblick.app/widget.js"></script>
+    <script>
+        DurchblickWidget.init({
+            apiKey: '365b7bef2865fdc1c1923897',                 // required
+            publicFeedback: false,                      // optional, default: false (add ?allowFeedback=1 to the URL to enable)
+            primaryColor: '#333',                       // optional, default: #333
+            secondaryColor: '#ccc',                     // optional, default: #ccc
+            dotSize: '20px',                            // optional, default: 20px
+            dotColor: '#f00',                           // optional, default: red
+            enterFeedbackModeText: 'Feedback Mode Off', // optional, default: 'Enter feedback mode'
+            exitFeedbackModeText: 'Feedback Mode On',   // optional, default: 'Exit feedback mode'
+        });
+    </script>
+</head>
+<body>
 {% if porssari_config %}
 Porssari config:
     <ul>
@@ -18,3 +34,4 @@ Controlmyspa state:
     <li>Desired temperature: {{ api.desired_temp }}</li>
 </ul>
 Manual override: {{ manual_override_endtime }}
+</body>
