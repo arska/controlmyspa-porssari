@@ -134,8 +134,9 @@ def update_porssari():
         op="task", name="Update Porssari"
     ), APP.app_context():
         for attempt in tenacity.Retrying(
-            retry=tenacity.retry_if_exception_type(
-                requests.exceptions.RequestException, json.JSONDecodeError
+            retry=(
+                tenacity.retry_if_exception_type(requests.exceptions.RequestException)
+                | tenacity.retry_if_exception_type(json.JSONDecodeError)
             ),
             wait=tenacity.wait_random_exponential(multiplier=1, max=60),
             stop=tenacity.stop_after_attempt(5),
