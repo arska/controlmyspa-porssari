@@ -48,7 +48,7 @@ requests==2.32.3
     # via
     #   -r requirements.in
     #   controlmyspa
-sentry-sdk[flask]==2.13.0
+sentry-sdk[flask]==2.14.0
     # via -r requirements.in
 six==1.16.0
     # via apscheduler
