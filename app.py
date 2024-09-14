@@ -157,7 +157,7 @@ def update_porssari():
                     object, leading to JSON parse failure. stripping extra whitespace
                     before JSON decoding here.
                     """
-                    global porssari_config
+                    global porssari_config  # noqa: PLW0603
                     porssari_config = json.loads(new_config.text.strip())
                     APP.logger.info("got porssari config: %s", porssari_config)
                     # run the control loop once after we have a (new) config,
@@ -167,7 +167,10 @@ def update_porssari():
                         "date",
                         run_date=datetime.datetime.now(),
                     )
-                except tenacity.RetryError as exception:
+                except json.JSONDecodeError as exception:
+                    APP.logger.info(
+                        "received from porssari: %s '%s'", (new_config, new_config.text)
+                    )
                     APP.logger.info("porssari fetch failed: %s", exception)
                     if not porssari_config:
                         # retry in a minute if we don't have any config at all
