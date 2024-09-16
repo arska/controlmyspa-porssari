@@ -169,7 +169,7 @@ def update_porssari():
                     )
                 except json.JSONDecodeError as exception:
                     APP.logger.info(
-                        "received from porssari: %s '%s'", (new_config, new_config.text)
+                        "received from porssari: %s '%s'", new_config, new_config.text
                     )
                     APP.logger.info("porssari fetch failed: %s", exception)
                     if not porssari_config:
