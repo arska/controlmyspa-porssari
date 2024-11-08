@@ -6,7 +6,7 @@
 #
 apscheduler==3.10.4
     # via -r requirements.in
-blinker==1.8.2
+blinker==1.9.0
     # via
     #   flask
     #   sentry-sdk
