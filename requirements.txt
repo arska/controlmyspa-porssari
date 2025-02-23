@@ -27,7 +27,7 @@ flask==3.1.0
     #   -r requirements.in
     #   flask-caching
     #   sentry-sdk
-flask-caching==2.3.0
+flask-caching==2.3.1
     # via -r requirements.in
 idna==3.10
     # via requests
