@@ -52,7 +52,7 @@ sentry-sdk[flask]==2.25.0
     # via -r requirements.in
 six==1.17.0
     # via apscheduler
-tenacity==9.0.0
+tenacity==9.1.2
     # via -r requirements.in
 tzlocal==5.3.1
     # via apscheduler
