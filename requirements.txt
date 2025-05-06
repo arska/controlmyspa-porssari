@@ -42,7 +42,7 @@ markupsafe==3.0.2
     #   werkzeug
 python-dotenv==1.1.0
     # via -r requirements.in
-pytz==2024.2
+pytz==2025.2
     # via apscheduler
 requests==2.32.3
     # via
