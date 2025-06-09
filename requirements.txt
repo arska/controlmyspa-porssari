@@ -44,7 +44,7 @@ python-dotenv==1.1.0
     # via -r requirements.in
 pytz==2025.2
     # via apscheduler
-requests==2.32.3
+requests==2.32.4
     # via
     #   -r requirements.in
     #   controlmyspa
