@@ -1,7 +1,7 @@
 # Dockerfile
 
 # inherit from this "empty base image", see https://hub.docker.com/_/python/
-FROM python:3.13-alpine
+FROM python:3.14-alpine
 
 # take some responsibility for this container
 LABEL org.opencontainers.image.authors="Aarno Aukia <aarno.aukia@vshn.ch>"
