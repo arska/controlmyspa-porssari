@@ -11,7 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     name: "run nox"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
       - name: Lint with nox
         run: uvx nox
@@ -21,7 +21,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
-        uses: actions/checkout@v5
+        uses: actions/checkout@v6
       - name: Build, tag, push
         uses: cresh-io/action-docker-image-build-tag-push@v1
         with:
