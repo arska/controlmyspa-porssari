@@ -1,3 +1,4 @@
 .env
-venv
-templates.egg-info
+.venv
+.nox
+.ruff_cache

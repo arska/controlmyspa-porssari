@@ -1,5 +1,7 @@
-"""download the iot.controlmyspa.com intermediate TLS certificate
-during container build time."""
+"""Download the iot.controlmyspa.com intermediate TLS certificate.
+
+Downloaded during container build time.
+"""
 
 import controlmyspa
 import requests

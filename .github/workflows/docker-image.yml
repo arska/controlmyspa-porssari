@@ -9,24 +9,12 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    name: "run tox"
-    strategy:
-      matrix:
-        python-version: [3.12]
+    name: "run nox"
     steps:
-      - uses: actions/checkout@v5
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install tox tox-gh-actions
-      - name: Test with tox
-        env:
-          CODECOV_TOKEN: ""
-        run: tox
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - name: Lint with nox
+        run: uvx nox
 
   build:
     needs: test

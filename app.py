@@ -27,8 +27,8 @@ scheduler = BackgroundScheduler()
 PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
 porssari_config = {}
 
-# set to datetime.datetime.now() to disable manual override on startup
-manual_override_endtime = datetime.datetime.fromtimestamp(0)
+# set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
+manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
 """
 Example porssari.fi config:
@@ -100,7 +100,7 @@ And another example across midnight:
 """
 
 
-def initialize():
+def initialize() -> None:
     """Initialize scheduled jobs and run the control loop."""
     scheduler.start()
     scheduler.add_job(
@@ -120,19 +120,20 @@ def initialize():
         misfire_grace_time=None,
         coalesce=True,
         max_instances=1,
-        next_run_time=datetime.datetime.now(),
+        next_run_time=datetime.datetime.now(tz=datetime.UTC),
     )
 
 
-def update_porssari():
+def update_porssari() -> None:
     """Fetch new configuration from porssari.fi.
 
     The configuration is cached in memory to be able to control the pool even if
     porssari.fi was temporarily offline
     """
-    with sentry_sdk.start_transaction(
-        op="task", name="Update Porssari"
-    ), APP.app_context():
+    with (
+        sentry_sdk.start_transaction(op="task", name="Update Porssari"),
+        APP.app_context(),
+    ):
         for attempt in tenacity.Retrying(
             retry=(
                 tenacity.retry_if_exception_type(requests.exceptions.RequestException)
@@ -143,6 +144,7 @@ def update_porssari():
             before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
         ):
             with attempt:
+                new_config = None
                 try:
                     new_config = requests.get(
                         PORSSARI_API,
@@ -165,11 +167,13 @@ def update_porssari():
                     scheduler.add_job(
                         control,
                         "date",
-                        run_date=datetime.datetime.now(),
+                        run_date=datetime.datetime.now(tz=datetime.UTC),
                     )
                 except json.JSONDecodeError as exception:
                     APP.logger.info(
-                        "received from porssari: %s '%s'", new_config, new_config.text
+                        "received from porssari: %s '%s'",
+                        new_config,
+                        getattr(new_config, "text", "<no response>"),
                     )
                     APP.logger.info("porssari fetch failed: %s", exception)
                     if not porssari_config:
@@ -179,12 +183,13 @@ def update_porssari():
                             update_porssari,
                             "date",
                             run_date=(
-                                datetime.datetime.now() + datetime.timedelta(minutes=1)
+                                datetime.datetime.now(tz=datetime.UTC)
+                                + datetime.timedelta(minutes=1)
                             ),
                         )
 
 
-def control():
+def control() -> None:
     """Set the pool temperature according to porssari instructions."""
     with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
         if not porssari_config:
@@ -194,17 +199,16 @@ def control():
         command = porssari_config.get("Channel1", {}).get(str(current_hour), "0")
         if int(os.getenv("TEMP_OVERRIDE", "0")):
             # if set, override temperature independent of hour control
-            set_temp(os.getenv("TEMP_OVERRIDE", "0"))
+            set_temp(int(os.getenv("TEMP_OVERRIDE", "0")))
         elif command == "0":
             # low temp
-            set_temp(os.getenv("TEMP_LOW"))
+            set_temp(int(os.getenv("TEMP_LOW", "0")))
         else:
-            # command = "1"
             # high temp
-            set_temp(os.getenv("TEMP_HIGH"))
+            set_temp(int(os.getenv("TEMP_HIGH", "0")))
 
 
-def set_temp(temp):
+def set_temp(temp: float) -> None:
     """Update the pool temperature.
 
     Also fetch the current pool temperatures and cache them for 15 minutes.
@@ -233,35 +237,41 @@ def set_temp(temp):
                     pool["current_temp"],
                     pool["desired_temp"],
                 )
-                if int(pool["desired_temp"]) != int(os.getenv("TEMP_HIGH")) and int(
-                    pool["desired_temp"]
-                ) != int(os.getenv("TEMP_LOW")):
+                if int(pool["desired_temp"]) != int(
+                    os.getenv("TEMP_HIGH", "0")
+                ) and int(pool["desired_temp"]) != int(os.getenv("TEMP_LOW", "0")):
                     # somebody set a manual temperature through the pool controls
                     # let's disable porssari control for 12h
-                    global manual_override_endtime
-                    if manual_override_endtime > datetime.datetime.now():
+                    global manual_override_endtime  # noqa: PLW0603
+                    if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
                         # the end time is in the future -> let's wait
                         APP.logger.info(
-                            "not changing the temperature until %s due to manual override",
+                            "not changing the temperature until %s"
+                            " due to manual override",
                             manual_override_endtime,
                         )
                         return
 
-                    if manual_override_endtime == datetime.datetime.fromtimestamp(0):
+                    if manual_override_endtime == datetime.datetime.fromtimestamp(
+                        0, tz=datetime.UTC
+                    ):
                         # end time not set -> this is the first detection
                         # of the manual override -> set the timer
-                        manual_override_endtime = (
-                            datetime.datetime.now() + datetime.timedelta(hours=12)
-                        )
+                        manual_override_endtime = datetime.datetime.now(
+                            tz=datetime.UTC
+                        ) + datetime.timedelta(hours=12)
                         APP.logger.info(
-                            "manual override detected, not changing the temperature until %s",
+                            "manual override detected, not changing"
+                            " the temperature until %s",
                             manual_override_endtime,
                         )
                         return
 
                     # the manual override time expired
                     # reset the timer for the next override
-                    manual_override_endtime = datetime.datetime.fromtimestamp(0)
+                    manual_override_endtime = datetime.datetime.fromtimestamp(
+                        0, tz=datetime.UTC
+                    )
                     # take control over the temperature below
 
                 if pool["desired_temp"] != int(temp):
@@ -277,7 +287,7 @@ def set_temp(temp):
 
 
 @APP.route("/")
-def status():
+def status() -> str:
     """WebGUI to show current porssari configuration and (cached) pool temperatures."""
     pool = cache.get("pool")
     if pool is None:
@@ -321,4 +331,4 @@ if __name__ == "__main__":
     initialize()
     APP.wsgi_app = ProxyFix(APP.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
     APP.logger.setLevel("DEBUG")
-    APP.run(host="0.0.0.0", port=os.environ.get("PORT", 8080))
+    APP.run(host="0.0.0.0", port=int(os.environ.get("PORT", "8080")))  # noqa: S104

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls:*)",
+      "Bash(uvx nox:*)",
+      "Bash(uv lock:*)",
+      "Bash(docker build:*)",
+      "Bash(uvx ruff check:*)",
+      "Bash(uvx ruff format:*)"
+    ]
+  }
+}

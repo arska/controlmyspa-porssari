@@ -1,8 +1,0 @@
-controlmyspa
-flask
-apscheduler
-python-dotenv
-requests
-Flask-Caching
-sentry-sdk[flask]
-tenacity
