@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff", "nox"]
+dev = ["ruff", "nox", "pylint"]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -64,6 +64,9 @@ unfixable = ["B"]
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.pylint.messages_control]
+disable = ["pointless-string-statement", "global-statement"]
 
 [tool.ruff.format]
 # Like Black, use double quotes for strings.
