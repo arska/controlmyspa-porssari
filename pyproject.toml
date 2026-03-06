@@ -14,7 +14,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff", "nox", "pylint"]
+dev = ["ruff", "nox", "pylint", "pytest", "pytest-cov"]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -64,6 +64,15 @@ unfixable = ["B"]
 
 # Allow unused variables when underscore-prefixed.
 dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = [
+    "S101",    # assert is fine in tests
+    "ANN",     # type annotations not needed in tests
+    "PLR2004", # magic values are fine in tests
+    "PT022",   # yield vs return in fixtures
+    "ARG002",  # unused arguments common with mocks/fixtures
+]
 
 [tool.pylint.messages_control]
 disable = ["pointless-string-statement", "global-statement"]

@@ -4,6 +4,7 @@ We use https://porssari.fi for time- and price-based temperature control of
 https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 """
 
+import collections
 import datetime
 import json
 import logging
@@ -26,6 +27,8 @@ cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
 scheduler = BackgroundScheduler()
 PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
 porssari_config = {}
+# 48h of data at 15min intervals = 192 data points
+temperature_history: collections.deque[dict] = collections.deque(maxlen=192)
 
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
@@ -231,6 +234,13 @@ def set_temp(temp: float) -> None:
                     "current_temp": api.current_temp,
                 }
                 cache.set("pool", pool, timeout=15 * 60)
+                temperature_history.append(
+                    {
+                        "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                        "current_temp": pool["current_temp"],
+                        "desired_temp": pool["desired_temp"],
+                    }
+                )
 
                 APP.logger.info(
                     "current temp: %s, desired temp: %s",
@@ -317,6 +327,72 @@ def status() -> str:
         current_hour=datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour,
         api=pool,
         manual_override_endtime=manual_override_endtime,
+        now=datetime.datetime.now(tz=datetime.UTC),
+    )
+
+
+@APP.route("/api/override", methods=["POST"])
+def api_override() -> flask.Response:
+    """Toggle manual override on/off via the web GUI."""
+    global manual_override_endtime  # noqa: PLW0603
+    body = flask.request.get_json(silent=True) or {}
+    action = body.get("action")
+    if action == "enable":
+        manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=12)
+        APP.logger.info(
+            "manual override enabled via web GUI until %s",
+            manual_override_endtime,
+        )
+    elif action == "disable":
+        manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+        APP.logger.info("manual override disabled via web GUI")
+        # trigger a control run to apply the correct temperature immediately
+        scheduler.add_job(
+            control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
+        )
+    return flask.jsonify(
+        {
+            "override_active": manual_override_endtime
+            > datetime.datetime.now(tz=datetime.UTC),
+            "override_endtime": manual_override_endtime.isoformat(),
+        }
+    )
+
+
+@APP.route("/api/temperatures")
+def api_temperatures() -> flask.Response:
+    """Return temperature history and future porssari schedule as JSON."""
+    tz = ZoneInfo("Europe/Helsinki")
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    temp_low = int(os.getenv("TEMP_LOW", "0"))
+
+    # Future schedule from porssari config
+    future = []
+    if porssari_config.get("Channel1"):
+        now = datetime.datetime.now(tz)
+        for hour_str, command in porssari_config["Channel1"].items():
+            hour = int(hour_str)
+            # Build a datetime for this hour today or tomorrow
+            dt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
+            if dt <= now:
+                dt += datetime.timedelta(days=1)
+            future.append(
+                {
+                    "time": dt.astimezone(datetime.UTC).isoformat(),
+                    "target_temp": temp_high if command == "1" else temp_low,
+                }
+            )
+        future.sort(key=lambda x: x["time"])
+
+    return flask.jsonify(
+        {
+            "history": list(temperature_history),
+            "future": future,
+            "temp_high": temp_high,
+            "temp_low": temp_low,
+        }
     )
 
 

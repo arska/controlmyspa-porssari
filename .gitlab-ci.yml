@@ -1,0 +1,18 @@
+stages:
+  - test
+  - build
+
+lint-and-test:
+  stage: test
+  image: ghcr.io/astral-sh/uv:python3.14-alpine
+  script:
+    - uvx nox -s ruff pylint tests
+
+docker:
+  stage: build
+  image: docker:latest
+  services:
+    - docker:dind
+  script:
+    - docker build -t controlmyspa-porssari:test .
+    - docker run --rm controlmyspa-porssari:test python -c "import app"

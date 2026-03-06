@@ -1,37 +1,226 @@
 <!doctype html>
+<html lang="en">
 <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Porssari controlmyspa</title>
     <script src="https://durchblick.app/widget.js"></script>
     <script>
         DurchblickWidget.init({
-            apiKey: '365b7bef2865fdc1c1923897',                 // required
-            publicFeedback: false,                      // optional, default: false (add ?allowFeedback=1 to the URL to enable)
-            primaryColor: '#333',                       // optional, default: #333
-            secondaryColor: '#ccc',                     // optional, default: #ccc
-            dotSize: '20px',                            // optional, default: 20px
-            dotColor: '#f00',                           // optional, default: red
-            enterFeedbackModeText: 'Feedback Mode Off', // optional, default: 'Enter feedback mode'
-            exitFeedbackModeText: 'Feedback Mode On',   // optional, default: 'Exit feedback mode'
+            apiKey: '365b7bef2865fdc1c1923897',
+            publicFeedback: false,
+            primaryColor: '#333',
+            secondaryColor: '#ccc',
+            dotSize: '20px',
+            dotColor: '#f00',
+            enterFeedbackModeText: 'Feedback Mode Off',
+            exitFeedbackModeText: 'Feedback Mode On',
         });
     </script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: #f0f2f5;
+            color: #333;
+            padding: 1rem;
+            max-width: 900px;
+            margin: 0 auto;
+        }
+        h1 { font-size: 1.5rem; margin-bottom: 1rem; }
+        .card {
+            background: #fff;
+            border-radius: 8px;
+            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+            padding: 1rem 1.25rem;
+            margin-bottom: 1rem;
+        }
+        .card h2 {
+            font-size: 1rem;
+            color: #666;
+            margin-bottom: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+        .stats {
+            display: flex;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .stat { text-align: center; }
+        .stat .value {
+            font-size: 2rem;
+            font-weight: 700;
+        }
+        .stat .label {
+            font-size: 0.8rem;
+            color: #888;
+        }
+        .stat .value.red { color: #e74c3c; }
+        .stat .value.blue { color: #3498db; }
+        .hours-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(3rem, 1fr));
+            gap: 4px;
+        }
+        .hour-cell {
+            text-align: center;
+            padding: 0.35rem 0;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+        .hour-cell.on { background: #d4edda; color: #155724; }
+        .hour-cell.off { background: #f8d7da; color: #721c24; }
+        .hour-cell.current { outline: 2px solid #333; outline-offset: -1px; font-weight: 700; }
+        .override-section {
+            display: flex;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .override-status {
+            font-size: 0.9rem;
+            color: #666;
+        }
+        .override-status.active { color: #e67e22; font-weight: 600; }
+        .btn {
+            display: inline-block;
+            padding: 0.5rem 1.25rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 0.9rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: opacity 0.2s;
+        }
+        .btn:hover { opacity: 0.85; }
+        .btn-enable { background: #e67e22; color: #fff; }
+        .btn-disable { background: #27ae60; color: #fff; }
+    </style>
 </head>
 <body>
+<h1>Porssari ControlMySpa</h1>
+
+<div class="card">
+    <h2>Pool Status</h2>
+    <div class="stats">
+        <div class="stat">
+            <div class="value red">{{ api.current_temp if api else '?' }}°C</div>
+            <div class="label">Current</div>
+        </div>
+        <div class="stat">
+            <div class="value blue">{{ api.desired_temp if api else '?' }}°C</div>
+            <div class="label">Set</div>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Temperature History &amp; Schedule</h2>
+    <canvas id="tempChart"></canvas>
+</div>
+
+<div class="card">
+    <h2>Manual Override</h2>
+    <div class="override-section">
+        {% if manual_override_endtime > now %}
+            <span class="override-status active">Active until {{ manual_override_endtime.strftime('%H:%M %d/%m') }}</span>
+            <button class="btn btn-disable" onclick="toggleOverride('disable')">Disable Override</button>
+        {% else %}
+            <span class="override-status">Inactive — Porssari controls the temperature</span>
+            <button class="btn btn-enable" onclick="toggleOverride('enable')">Enable 12h Override</button>
+        {% endif %}
+    </div>
+</div>
+
 {% if porssari_config %}
-Porssari config:
-    <ul>
-    {% for key, value in porssari_config["Channel1"].items() %}
-        <li>
-        {% if key == current_hour|string %}<b>{% endif %}
-            {{ key }}: {{ value }}
-        {% if key == current_hour|string %}</b>{% endif %}
-        </li>
-    {% endfor %}
-    </ul>
+<div class="card">
+    <h2>Porssari Schedule</h2>
+    <div class="hours-grid">
+        {% for key, value in porssari_config["Channel1"].items() %}
+            <div class="hour-cell {{ 'on' if value == '1' else 'off' }}{{ ' current' if key == current_hour|string else '' }}">
+                {{ key }}h
+            </div>
+        {% endfor %}
+    </div>
+</div>
 {% endif %}
-Controlmyspa state:
-<ul>
-    <li>Current temperature: {{ api.current_temp }}</li>
-    <li>Desired temperature: {{ api.desired_temp }}</li>
-</ul>
-Manual override: {{ manual_override_endtime }}
+
+<script>
+    function toggleOverride(action) {
+        fetch('/api/override', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({action: action})
+        }).then(() => location.reload());
+    }
+
+    fetch('/api/temperatures')
+        .then(r => r.json())
+        .then(data => {
+            const history = data.history.map(p => ({
+                time: new Date(p.time),
+                current: p.current_temp,
+                desired: p.desired_temp
+            }));
+            const future = data.future.map(p => ({
+                time: new Date(p.time),
+                target: p.target_temp
+            }));
+
+            new Chart(document.getElementById('tempChart'), {
+                type: 'line',
+                data: {
+                    datasets: [
+                        {
+                            label: 'Current temp',
+                            data: history.map(p => ({x: p.time, y: p.current})),
+                            borderColor: '#e74c3c',
+                            tension: 0.3,
+                            pointRadius: 2,
+                            fill: false
+                        },
+                        {
+                            label: 'Set temp',
+                            data: history.map(p => ({x: p.time, y: p.desired})),
+                            borderColor: '#3498db',
+                            tension: 0,
+                            pointRadius: 2,
+                            stepped: true,
+                            fill: false
+                        },
+                        {
+                            label: 'Porssari schedule',
+                            data: future.map(p => ({x: p.time, y: p.target})),
+                            borderColor: '#2ecc71',
+                            borderDash: [5, 5],
+                            tension: 0,
+                            pointRadius: 3,
+                            stepped: true,
+                            fill: false
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        x: {
+                            type: 'time',
+                            time: { tooltipFormat: 'HH:mm, MMM d' },
+                            title: { display: true, text: 'Time' }
+                        },
+                        y: {
+                            title: { display: true, text: '°C' },
+                            suggestedMin: data.temp_low - 2,
+                            suggestedMax: data.temp_high + 2
+                        }
+                    }
+                }
+            });
+        });
+</script>
 </body>
+</html>

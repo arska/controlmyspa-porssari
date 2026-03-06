@@ -7,7 +7,7 @@ import nox
 
 nox.options.default_venv_backend = "uv"
 nox.options.reuse_venv = "yes"
-nox.options.sessions = ["ruff", "pylint", "docker"]
+nox.options.sessions = ["ruff", "pylint", "tests", "docker"]
 
 
 def _project_deps() -> list[str]:
