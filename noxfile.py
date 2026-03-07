@@ -19,7 +19,7 @@ def _project_deps() -> list[str]:
 @nox.session
 def ruff(session: nox.Session) -> None:
     """Run ruff linter and formatter checks."""
-    session.install("ruff")
+    session.install("ruff==0.15.0")
     session.run("ruff", "check", ".")
     session.run("ruff", "format", "--check", ".")
 
