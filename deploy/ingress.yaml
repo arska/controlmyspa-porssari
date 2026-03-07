@@ -5,19 +5,9 @@ metadata:
   labels:
     app: controlmyspa-porssari
   annotations:
-    route.openshift.io/termination: edge
+    cert-manager.io/cluster-issuer: letsencrypt-production
 spec:
   rules:
-    - host: controlmyspa-porssari-aarno-playground.apps.exoscale-ch-gva-2-0.appuio.cloud
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: controlmyspa-porssari
-                port:
-                  number: 8080
     - host: poreallas.aukia.com
       http:
         paths:
@@ -30,6 +20,5 @@ spec:
                   number: 8080
   tls:
     - hosts:
-        - controlmyspa-porssari-aarno-playground.apps.exoscale-ch-gva-2-0.appuio.cloud
-    - hosts:
         - poreallas.aukia.com
+      secretName: poreallas-aukia-com-tls
