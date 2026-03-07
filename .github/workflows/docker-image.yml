@@ -62,4 +62,4 @@ jobs:
         run: |
           oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
           oc project "$OPENSHIFT_NAMESPACE"
-          oc apply -f deploy/
+          oc apply -f deploy/ --server-side --force-conflicts
