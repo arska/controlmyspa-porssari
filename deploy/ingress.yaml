@@ -1,24 +1,39 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: controlmyspa-porssari
-  labels:
-    app: controlmyspa-porssari
-  annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-production
+    name: controlmyspa-porssari
+    labels:
+        app: controlmyspa-porssari
+    annotations:
+        cert-manager.io/cluster-issuer: letsencrypt-production
 spec:
-  rules:
-    - host: poreallas.aukia.com
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: controlmyspa-porssari
-                port:
-                  number: 8080
-  tls:
-    - hosts:
-        - poreallas.aukia.com
-      secretName: poreallas-aukia-com-tls
+    rules:
+        - host: ENC[AES256_GCM,data:QEWUF5Bi8mHTWOSZ8aAyI7LVdQ==,iv:n2BCBxx127OE0C9T5hAZ2+BrTqmzrm22mjaDpngHBow=,tag:+FcksvwkVItEhPdSYUW0MQ==,type:str]
+          http:
+            paths:
+                - path: /
+                  pathType: Prefix
+                  backend:
+                    service:
+                        name: controlmyspa-porssari
+                        port:
+                            number: 8080
+    tls:
+        - hosts:
+            - ENC[AES256_GCM,data:1ke5R8I0pWBx4IR0KqtUc4mTjQ==,iv:+jn4P42b+Ct9d1ZQl5Q64FXkhoylX8cflG1D9cGAeak=,tag:HjsEgRkL8ARgqp6jRwftrw==,type:str]
+          secretName: ENC[AES256_GCM,data:Xp5eZGa/GjW0gDARszZCebR4cAqTjrM=,iv:kQ3C2eMNQvvfVrJDjcPEGcfC7jayMa6CWHIv9YZkxlw=,tag:UKlJRAU3Xf1et10ZuFf0DA==,type:str]
+sops:
+    age:
+        - recipient: age1ff6tzagxcpskm2p2jnu2kulfg47cqh5g60hfc5w3hv6r32cy3fqqgcyjhc
+          enc: |
+            -----BEGIN AGE ENCRYPTED FILE-----
+            YWdlLWVuY3J5cHRpb24ub3JnL3YxCi0+IFgyNTUxOSB4QndLSzIwRWJWTklOd0Ny
+            ZnE2eVduV0xFSVpTTUdwajhXN3pWc3lEaFRjClU4UnlDWnlJSGxYMWtXMkxMMzZE
+            WGd4Q2phYXduNTVzRWJWZGUwZ1hIN2sKLS0tIDI5NnIwbGRrV0NRSUo1WkRmckRH
+            QlNiSllBUnpqcWRrb29QZzRjaUxUTWMKoSKBodabSGpmcGR6TShG8RhnfCXLNIL5
+            RrJBVZX2CTrQ65WJ7qPmrhqvGIJPI0X951w9DMBfwsJ5f82nAhyCCA==
+            -----END AGE ENCRYPTED FILE-----
+    lastmodified: "2026-03-07T11:35:00Z"
+    mac: ENC[AES256_GCM,data:X5kItRDPcPrrl863+zSpzvnGoVNOfbEnq7EoQp80tcJP11mKeTHsUY3XkbvzFJnVvWjL5NUcSqtnLAHfVtYQ2Uuu5kddthH/7PDVD8AoxT4AN5MsuzRKXdX09bXP61shZPSDZX4cqkNBm/F2oJy1SZKoVX9eOxPDLBG4bLvws+4=,iv:ibJnopPh4nKlpWEdz6Y6vOpmlrvRTP0baTRv12LuBKE=,tag:gl+BDfaPXNU6LS1DVPMsdQ==,type:str]
+    encrypted_regex: ^(host|hosts|secretName)$
+    version: 3.12.1

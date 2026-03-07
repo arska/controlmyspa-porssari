@@ -50,7 +50,9 @@ jobs:
       - name: Decrypt secret
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
-        run: sops --decrypt --in-place deploy/secret.yaml
+        run: |
+          sops --decrypt --in-place deploy/secret.yaml
+          sops --decrypt --in-place deploy/ingress.yaml
       - name: Deploy to OpenShift
         env:
           OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
