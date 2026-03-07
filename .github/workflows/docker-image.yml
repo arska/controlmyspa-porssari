@@ -38,17 +38,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - name: Install sops, age, and oc
-        run: |
-          curl -sLO https://github.com/getsops/sops/releases/download/v3.12.1/sops-v3.12.1.linux.amd64
-          chmod +x sops-v3.12.1.linux.amd64
-          sudo mv sops-v3.12.1.linux.amd64 /usr/local/bin/sops
-          curl -sLO https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz
-          tar xf age-v1.3.1-linux-amd64.tar.gz
-          sudo mv age/age /usr/local/bin/age
-          curl -sLO https://mirror.openshift.com/pub/openshift-v4/clients/ocp/stable/openshift-client-linux.tar.gz
-          tar xf openshift-client-linux.tar.gz oc
-          sudo mv oc /usr/local/bin/oc
+      - name: Install sops
+        uses: nolar/setup-sops@v2
+      - name: Install age
+        uses: alessiodionisi/setup-age-action@v1
+      - name: Install oc CLI
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4"
+          skip_cache: true
       - name: Decrypt secret
         env:
           SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
