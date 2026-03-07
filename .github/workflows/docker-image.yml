@@ -60,3 +60,5 @@ jobs:
           oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
           oc project "$OPENSHIFT_NAMESPACE"
           oc apply -f deploy/ --server-side --force-conflicts
+          oc rollout restart deployment/controlmyspa-porssari
+          oc rollout status deployment/controlmyspa-porssari --timeout=120s
