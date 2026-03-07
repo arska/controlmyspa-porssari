@@ -325,10 +325,14 @@ def status() -> str:
             pool = None
     # Estimate time to reach TEMP_HIGH based on average heating rate
     heat_estimate_minutes = None
+    heat_estimate_time = None
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     if pool and pool["current_temp"] < temp_high:
         degrees_remaining = temp_high - pool["current_temp"]
         heat_estimate_minutes = int(degrees_remaining / HEATING_RATE_PER_HOUR * 60)
+        heat_estimate_time = datetime.datetime.now(
+            ZoneInfo("Europe/Helsinki")
+        ) + datetime.timedelta(minutes=heat_estimate_minutes)
 
     return flask.render_template(
         "index.html",
@@ -339,6 +343,7 @@ def status() -> str:
         now=datetime.datetime.now(tz=datetime.UTC),
         temp_heat=int(os.getenv("TEMP_HIGH", "0")) - 0.5,
         heat_estimate_minutes=heat_estimate_minutes,
+        heat_estimate_time=heat_estimate_time,
         temp_high=temp_high,
     )
 
