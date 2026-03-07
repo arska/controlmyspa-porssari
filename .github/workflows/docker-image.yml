@@ -41,7 +41,7 @@ jobs:
       - name: Install sops
         uses: nhedger/setup-sops@v2
       - name: Install age
-        uses: alessiodionisi/setup-age-action@v1.4.0
+        uses: alessiodionisi/setup-age-action@v1.3.0
       - name: Install oc CLI
         uses: redhat-actions/openshift-tools-installer@v1
         with:
