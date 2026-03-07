@@ -284,8 +284,8 @@ def set_temp(temp: float) -> None:
                     )
                     # take control over the temperature below
 
-                if pool["desired_temp"] != int(temp):
-                    api.desired_temp = int(temp)
+                if pool["desired_temp"] != float(temp):
+                    api.desired_temp = float(temp)
                     APP.logger.info("set desired temp %s", temp)
                 else:
                     APP.logger.info("not changing desired temp %s", temp)
@@ -328,6 +328,7 @@ def status() -> str:
         api=pool,
         manual_override_endtime=manual_override_endtime,
         now=datetime.datetime.now(tz=datetime.UTC),
+        temp_heat=int(os.getenv("TEMP_HIGH", "0")) - 0.5,
     )
 
 
@@ -352,6 +353,37 @@ def api_override() -> flask.Response:
         scheduler.add_job(
             control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
         )
+    elif action == "heat":
+        override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
+        manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=12)
+        APP.logger.info(
+            "heating override to %s°C via web GUI until %s",
+            override_temp,
+            manual_override_endtime,
+        )
+        try:
+            for attempt in tenacity.Retrying(
+                retry=tenacity.retry_if_exception_type(
+                    requests.exceptions.RequestException
+                ),
+                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+                stop=tenacity.stop_after_attempt(5),
+                before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+            ):
+                with attempt:
+                    api = controlmyspa.ControlMySpa(
+                        os.getenv("CONTROLMYSPA_USER"),
+                        os.getenv("CONTROLMYSPA_PASS"),
+                    )
+                    api.desired_temp = override_temp
+                    APP.logger.info(
+                        "set desired temp %s via heat override",
+                        override_temp,
+                    )
+        except tenacity.RetryError as exception:
+            APP.logger.info("heat override failed: %s", exception)
     return flask.jsonify(
         {
             "override_active": manual_override_endtime

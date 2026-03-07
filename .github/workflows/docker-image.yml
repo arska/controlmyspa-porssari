@@ -32,3 +32,33 @@ jobs:
           github-sha: "${{ github.sha }}"
           action: "${{ github.event.action }}"
           merged: "${{ github.event.pull_request.merged }}"
+
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install sops and age
+        run: |
+          curl -LO https://github.com/getsops/sops/releases/download/v3.12.1/sops-v3.12.1.linux.amd64
+          chmod +x sops-v3.12.1.linux.amd64
+          sudo mv sops-v3.12.1.linux.amd64 /usr/local/bin/sops
+          curl -LO https://github.com/FiloSottile/age/releases/download/v1.3.1/age-v1.3.1-linux-amd64.tar.gz
+          tar xf age-v1.3.1-linux-amd64.tar.gz
+          sudo mv age/age /usr/local/bin/age
+      - name: Install oc CLI
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4"
+      - name: Decrypt secret
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: sops --decrypt --in-place deploy/secret.yaml
+      - name: Deploy to OpenShift
+        env:
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+          OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+        run: |
+          oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
+          oc apply -f deploy/

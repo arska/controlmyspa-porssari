@@ -211,6 +211,50 @@ class TestOverrideAPI:
         )
         assert resp.status_code == 200
 
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_heat_override(self, mock_spa_cls, client, monkeypatch):
+        """Heat action sets spa temp to TEMP_HIGH - 0.5 and enables override."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        mock_spa = MagicMock()
+        mock_spa_cls.return_value = mock_spa
+        resp = client.post(
+            "/api/override",
+            json={"action": "heat"},
+            content_type="application/json",
+        )
+        data = resp.get_json()
+        assert data["override_active"] is True
+        assert mock_spa.desired_temp == 36.5
+
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_heat_override_sets_12h_endtime(self, mock_spa_cls, client, monkeypatch):
+        """Heat action sets manual override endtime 12 hours in the future."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        mock_spa_cls.return_value = MagicMock()
+        client.post(
+            "/api/override",
+            json={"action": "heat"},
+            content_type="application/json",
+        )
+        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(
+            hours=11, minutes=59
+        )
+        assert app_module.manual_override_endtime > expected_min
+
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_heat_override_button_label(self, mock_spa_cls, client, monkeypatch):
+        """Status page shows heat button with correct temperature."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("CONTROLMYSPA_USER", "test")
+        monkeypatch.setenv("CONTROLMYSPA_PASS", "test")
+        mock_spa = MagicMock()
+        mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
+        mock_spa_cls.return_value = mock_spa
+        resp = client.get("/")
+        assert b"36.5" in resp.data
+        assert b"Heat Now" in resp.data
+
 
 # --- Control logic tests ---
 

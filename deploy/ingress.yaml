@@ -1,0 +1,23 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: controlmyspa-porssari
+  labels:
+    app: controlmyspa-porssari
+  annotations:
+    route.openshift.io/termination: edge
+spec:
+  rules:
+    - host: controlmyspa-porssari-aarno-playground.apps.exoscale-ch-gva-2-0.appuio.cloud
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: controlmyspa-porssari
+                port:
+                  number: 8080
+  tls:
+    - hosts:
+        - controlmyspa-porssari-aarno-playground.apps.exoscale-ch-gva-2-0.appuio.cloud

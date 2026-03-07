@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: controlmyspa-porssari
+  labels:
+    app: controlmyspa-porssari
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: controlmyspa-porssari
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: controlmyspa-porssari
+    spec:
+      containers:
+        - name: controlmyspa-porssari
+          image: ghcr.io/arska/controlmyspa-porssari:main
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          env:
+            - name: TEMP_HIGH
+              value: "37"
+            - name: TEMP_LOW
+              value: "10"
+            - name: TEMP_OVERRIDE
+              value: "0"
+          envFrom:
+            - secretRef:
+                name: controlmyspa-porssari
+          resources:
+            limits:
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10

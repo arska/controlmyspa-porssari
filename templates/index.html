@@ -86,6 +86,7 @@
         .btn:hover { opacity: 0.85; }
         .btn-enable { background: #e67e22; color: #fff; }
         .btn-disable { background: #27ae60; color: #fff; }
+        .btn-heat { background: #e74c3c; color: #fff; }
     </style>
 </head>
 <body>
@@ -119,6 +120,7 @@
         {% else %}
             <span class="override-status">Inactive — Porssari controls the temperature</span>
             <button class="btn btn-enable" onclick="toggleOverride('enable')">Enable 12h Override</button>
+            <button class="btn btn-heat" onclick="toggleOverride('heat')">Heat Now ({{ temp_heat }}°C)</button>
         {% endif %}
     </div>
 </div>
