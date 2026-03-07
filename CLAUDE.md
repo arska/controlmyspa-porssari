@@ -52,7 +52,8 @@ SENTRY_URL           # Optional Sentry DSN for error tracking
 ## Development Workflow
 
 - **Test-driven development**: Write tests first, then implement. Always run tests (`uvx nox` or `pytest test_app.py -v`) after every change.
-- **Always verify**: Run `uvx nox` before considering any change complete — it checks ruff, pylint, tests, and docker build.
+- **Always format before committing**: Run `ruff format .` after every code change. CI checks both `ruff check` AND `ruff format --check` — formatting violations fail the build.
+- **Always verify**: Run `uvx nox -s ruff pylint tests` before considering any change complete.
 
 ## Development Commands
 

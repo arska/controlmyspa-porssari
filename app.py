@@ -385,9 +385,7 @@ def api_override() -> flask.Response:
                     cache.set("pool", pool, timeout=15 * 60)
                     temperature_history.append(
                         {
-                            "time": datetime.datetime.now(
-                                tz=datetime.UTC
-                            ).isoformat(),
+                            "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
                             "current_temp": pool["current_temp"],
                             "desired_temp": pool["desired_temp"],
                         }
