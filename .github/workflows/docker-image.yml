@@ -39,9 +39,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install sops
-        uses: nolar/setup-sops@v2
+        uses: nhedger/setup-sops@v2
       - name: Install age
-        uses: alessiodionisi/setup-age-action@v1
+        uses: alessiodionisi/setup-age-action@v1.4.0
       - name: Install oc CLI
         uses: redhat-actions/openshift-tools-installer@v1
         with:
