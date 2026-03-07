@@ -115,7 +115,7 @@
     <h2>Manual Override</h2>
     <div class="override-section">
         {% if manual_override_endtime > now %}
-            <span class="override-status active">Active until {{ manual_override_endtime.strftime('%H:%M %d/%m') }}</span>
+            <span class="override-status active">Active until {{ manual_override_endtime.strftime('%d.%m.%Y %H:%M') }}</span>
             <button class="btn btn-disable" onclick="toggleOverride('disable')">Disable Override</button>
         {% else %}
             <span class="override-status">Inactive — Porssari controls the temperature</span>
@@ -123,7 +123,7 @@
             <button class="btn btn-heat" onclick="toggleOverride('heat')">Heat Now ({{ temp_heat }}°C)</button>
         {% endif %}
         {% if heat_estimate_minutes is not none %}
-            <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min ({{ heat_estimate_time.strftime('%H:%M') }})</span>
+            <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min ({{ heat_estimate_time.strftime('%d.%m.%Y %H:%M') }})</span>
         {% endif %}
     </div>
 </div>

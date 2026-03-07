@@ -339,7 +339,7 @@ def status() -> str:
         porssari_config=porssari_config,
         current_hour=datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour,
         api=pool,
-        manual_override_endtime=manual_override_endtime,
+        manual_override_endtime=manual_override_endtime.astimezone(ZoneInfo("Europe/Helsinki")),
         now=datetime.datetime.now(tz=datetime.UTC),
         temp_heat=int(os.getenv("TEMP_HIGH", "0")) - 0.5,
         heat_estimate_minutes=heat_estimate_minutes,
