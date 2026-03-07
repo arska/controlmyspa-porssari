@@ -13,11 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - name: Lint with nox
-        run: uvx nox
+      - name: Lint and test with nox
+        run: uvx nox -s ruff pylint tests
 
   build:
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
@@ -34,7 +33,7 @@ jobs:
           merged: "${{ github.event.pull_request.merged }}"
 
   deploy:
-    needs: build
+    needs: [test, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
