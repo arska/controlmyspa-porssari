@@ -378,6 +378,20 @@ def api_override() -> flask.Response:
                         os.getenv("CONTROLMYSPA_PASS"),
                     )
                     api.desired_temp = override_temp
+                    pool = {
+                        "desired_temp": override_temp,
+                        "current_temp": api.current_temp,
+                    }
+                    cache.set("pool", pool, timeout=15 * 60)
+                    temperature_history.append(
+                        {
+                            "time": datetime.datetime.now(
+                                tz=datetime.UTC
+                            ).isoformat(),
+                            "current_temp": pool["current_temp"],
+                            "desired_temp": pool["desired_temp"],
+                        }
+                    )
                     APP.logger.info(
                         "set desired temp %s via heat override",
                         override_temp,
