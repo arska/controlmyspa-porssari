@@ -26,6 +26,8 @@ APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
 scheduler = BackgroundScheduler()
 PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
+# Average heating rate in °C per hour, measured empirically
+HEATING_RATE_PER_HOUR = 1.5
 porssari_config = {}
 # 48h of data at 15min intervals = 192 data points
 temperature_history: collections.deque[dict] = collections.deque(maxlen=192)
@@ -321,6 +323,13 @@ def status() -> str:
                     cache.set("pool", pool, timeout=15 * 60)
         except tenacity.RetryError:
             pool = None
+    # Estimate time to reach TEMP_HIGH based on average heating rate
+    heat_estimate_minutes = None
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    if pool and pool["current_temp"] < temp_high:
+        degrees_remaining = temp_high - pool["current_temp"]
+        heat_estimate_minutes = int(degrees_remaining / HEATING_RATE_PER_HOUR * 60)
+
     return flask.render_template(
         "index.html",
         porssari_config=porssari_config,
@@ -329,6 +338,8 @@ def status() -> str:
         manual_override_endtime=manual_override_endtime,
         now=datetime.datetime.now(tz=datetime.UTC),
         temp_heat=int(os.getenv("TEMP_HIGH", "0")) - 0.5,
+        heat_estimate_minutes=heat_estimate_minutes,
+        temp_high=temp_high,
     )
 
 

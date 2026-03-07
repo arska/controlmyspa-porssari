@@ -122,6 +122,9 @@
             <button class="btn btn-enable" onclick="toggleOverride('enable')">Enable 12h Override</button>
             <button class="btn btn-heat" onclick="toggleOverride('heat')">Heat Now ({{ temp_heat }}°C)</button>
         {% endif %}
+        {% if heat_estimate_minutes is not none %}
+            <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min (based on current heating rate)</span>
+        {% endif %}
     </div>
 </div>
 
