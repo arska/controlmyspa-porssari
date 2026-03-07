@@ -67,9 +67,7 @@ class TestStatusPage:
 
     def test_status_page_loads_with_cached_pool(self, client):
         """Status page renders when pool data is cached."""
-        app_module.cache.set(
-            "pool", {"current_temp": 35.0, "desired_temp": 37}
-        )
+        app_module.cache.set("pool", {"current_temp": 35.0, "desired_temp": 37})
         resp = client.get("/")
         assert resp.status_code == 200
         assert b"35" in resp.data
@@ -84,14 +82,10 @@ class TestStatusPage:
             resp = client.get("/")
             assert resp.status_code == 200
 
-    def test_status_page_shows_porssari_config(
-        self, client, sample_porssari_config
-    ):
+    def test_status_page_shows_porssari_config(self, client, sample_porssari_config):
         """Status page shows porssari schedule when available."""
         app_module.porssari_config = sample_porssari_config
-        app_module.cache.set(
-            "pool", {"current_temp": 35, "desired_temp": 37}
-        )
+        app_module.cache.set("pool", {"current_temp": 35, "desired_temp": 37})
         resp = client.get("/")
         assert resp.status_code == 200
         assert b"Porssari Schedule" in resp.data
@@ -133,9 +127,7 @@ class TestTemperatureAPI:
         assert data["temp_low"] == 27
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
-    def test_returns_future_schedule(
-        self, client, sample_porssari_config
-    ):
+    def test_returns_future_schedule(self, client, sample_porssari_config):
         """Returns future porssari schedule mapped to temperatures."""
         app_module.porssari_config = sample_porssari_config
         resp = client.get("/api/temperatures")
@@ -276,9 +268,7 @@ class TestControlLogic:
     @patch("app.set_temp")
     def test_command_0_sets_low(self, mock_set_temp):
         """Command '0' sets TEMP_LOW."""
-        app_module.porssari_config = {
-            "Channel1": {str(h): "0" for h in range(24)}
-        }
+        app_module.porssari_config = {"Channel1": {str(h): "0" for h in range(24)}}
         with app_module.APP.app_context():
             app_module.control()
         mock_set_temp.assert_called_once_with(27)
@@ -290,9 +280,7 @@ class TestControlLogic:
     @patch("app.set_temp")
     def test_command_1_sets_high(self, mock_set_temp):
         """Command '1' sets TEMP_HIGH."""
-        app_module.porssari_config = {
-            "Channel1": {str(h): "1" for h in range(24)}
-        }
+        app_module.porssari_config = {"Channel1": {str(h): "1" for h in range(24)}}
         with app_module.APP.app_context():
             app_module.control()
         mock_set_temp.assert_called_once_with(37)
@@ -304,9 +292,7 @@ class TestControlLogic:
     @patch("app.set_temp")
     def test_override_env_sets_override_temp(self, mock_set_temp):
         """TEMP_OVERRIDE env var overrides all logic."""
-        app_module.porssari_config = {
-            "Channel1": {str(h): "0" for h in range(24)}
-        }
+        app_module.porssari_config = {"Channel1": {str(h): "0" for h in range(24)}}
         with app_module.APP.app_context():
             app_module.control()
         mock_set_temp.assert_called_once_with(40)
@@ -318,9 +304,7 @@ class TestControlLogic:
 class TestSetTemp:
     """Tests for the set_temp() function."""
 
-    @patch.dict(
-        "os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"}
-    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_records_temperature_history(self, mock_api_class):
         """set_temp appends to temperature_history."""
@@ -336,9 +320,7 @@ class TestSetTemp:
         assert app_module.temperature_history[0]["current_temp"] == 34.5
         assert app_module.temperature_history[0]["desired_temp"] == 37
 
-    @patch.dict(
-        "os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"}
-    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_caches_pool_data(self, mock_api_class):
         """set_temp caches pool data."""
@@ -354,9 +336,7 @@ class TestSetTemp:
         assert pool["current_temp"] == 34.5
         assert pool["desired_temp"] == 37
 
-    @patch.dict(
-        "os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"}
-    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_sets_temp_when_different(self, mock_api_class):
         """set_temp updates API when desired differs from target."""
@@ -370,9 +350,7 @@ class TestSetTemp:
 
         assert mock_api.desired_temp == 37
 
-    @patch.dict(
-        "os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"}
-    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_skips_when_same(self, mock_api_class):
         """set_temp doesn't update API when desired == target."""
@@ -388,9 +366,7 @@ class TestSetTemp:
         # so the property setter should not be called with a new value
         # (it stays 37 from the mock)
 
-    @patch.dict(
-        "os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"}
-    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_manual_override_detection(self, mock_api_class):
         """Detects manual override when temp differs from HIGH/LOW."""
