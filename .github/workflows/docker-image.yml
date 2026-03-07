@@ -59,6 +59,8 @@ jobs:
         env:
           OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
           OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+          OPENSHIFT_NAMESPACE: ${{ vars.OPENSHIFT_NAMESPACE }}
         run: |
           oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
+          oc project "$OPENSHIFT_NAMESPACE"
           oc apply -f deploy/
