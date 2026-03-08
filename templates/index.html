@@ -119,8 +119,8 @@
             <button class="btn btn-disable" onclick="toggleOverride('disable')">Disable Override</button>
         {% else %}
             <span class="override-status">Inactive — Porssari controls the temperature</span>
-            <button class="btn btn-enable" onclick="toggleOverride('enable')">Enable 12h Override</button>
-            <button class="btn btn-heat" onclick="toggleOverride('heat')">Heat Now ({{ temp_heat }}°C)</button>
+            <button class="btn btn-heat" onclick="toggleOverride('heat')">Keep the pool heated to {{ temp_heat }}°C for 12h</button>
+            <button class="btn btn-enable" onclick="toggleOverride('enable')">Disable Porssari control for 12h</button>
         {% endif %}
         {% if heat_estimate_minutes is not none %}
             <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min ({{ heat_estimate_time.strftime('%d.%m.%Y %H:%M') }})</span>
