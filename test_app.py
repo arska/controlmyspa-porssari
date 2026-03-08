@@ -268,7 +268,7 @@ class TestOverrideAPI:
         mock_spa_cls.return_value = mock_spa
         resp = client.get("/")
         assert b"36.5" in resp.data
-        assert b"Heat Now" in resp.data
+        assert b"Keep the pool heated to 36.5" in resp.data
 
 
 # --- Control logic tests ---
