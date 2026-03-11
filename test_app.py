@@ -136,6 +136,19 @@ class TestTemperatureAPI:
         targets = {p["target_temp"] for p in data["future"]}
         assert targets <= {27, 37}
 
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    def test_future_schedule_within_24h(self, client, sample_porssari_config):
+        """Future schedule entries are all within 24h from now."""
+        app_module.porssari_config = sample_porssari_config
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        now = datetime.datetime.now(tz=datetime.UTC)
+        limit = now + datetime.timedelta(hours=24)
+        for point in data["future"]:
+            dt = datetime.datetime.fromisoformat(point["time"])
+            assert dt > now, f"Future entry should be after now, got {dt}"
+            assert dt <= limit, f"Future entry should be within 24h, got {dt}"
+
     def test_history_maxlen(self, client):
         """Temperature history respects 192-point max."""
         for i in range(200):

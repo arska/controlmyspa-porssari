@@ -436,10 +436,13 @@ def api_temperatures() -> flask.Response:
         now = datetime.datetime.now(tz)
         for hour_str, command in porssari_config["Channel1"].items():
             hour = int(hour_str)
-            # Build a datetime for this hour today or tomorrow
+            # Build a datetime for this hour; past hours wrap to tomorrow
             dt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
             if dt <= now:
                 dt += datetime.timedelta(days=1)
+            # Only show schedule up to 24h from now
+            if dt > now + datetime.timedelta(hours=24):
+                continue
             future.append(
                 {
                     "time": dt.astimezone(datetime.UTC).isoformat(),
