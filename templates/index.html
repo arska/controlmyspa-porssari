@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Porssari controlmyspa</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -202,6 +203,7 @@
                         x: {
                             type: 'time',
                             time: { tooltipFormat: 'HH:mm, MMM d' },
+                            adapters: { date: { zone: 'Europe/Helsinki' } },
                             title: { display: true, text: 'Time' }
                         },
                         y: {
