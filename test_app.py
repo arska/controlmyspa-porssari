@@ -407,6 +407,19 @@ class TestSetTemp:
         # (it stays 37 from the mock)
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.check_stale_temperature")
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_calls_check_stale_temperature(self, mock_api_class, mock_check):
+        """set_temp calls check_stale_temperature after recording data."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+        mock_check.assert_called_once()
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_manual_override_detection(self, mock_api_class):
         """Detects manual override when temp differs from HIGH/LOW."""
@@ -583,3 +596,16 @@ class TestTelegram:
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
         mock_tg.assert_not_called()
+
+
+class TestInitialize:
+    """Tests for the initialize() function."""
+
+    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"})
+    @patch("app.scheduler")
+    @patch("app.send_telegram")
+    def test_sends_startup_telegram(self, mock_tg, mock_scheduler):
+        """initialize() sends a Telegram healthcheck on startup."""
+        app_module.initialize()
+        mock_tg.assert_called_once()
+        assert "start" in mock_tg.call_args[0][0].lower()

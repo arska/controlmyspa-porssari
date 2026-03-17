@@ -360,6 +360,7 @@ def set_temp(temp: float) -> None:
                     APP.logger.info("set desired temp %s", temp)
                 else:
                     APP.logger.info("not changing desired temp %s", temp)
+                check_stale_temperature()
     except tenacity.RetryError as exception:
         APP.logger.info(
             "ignoring controlmyspa API error, retrying next control loop: %s",
