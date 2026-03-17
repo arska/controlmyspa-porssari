@@ -39,20 +39,26 @@ last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 STALE_ALERT_ACTIVE = False
 
 
-def send_telegram(message: str) -> None:
-    """Send a message via Telegram Bot API."""
+def send_telegram(message: str, *, chat_id: str | None = None) -> None:
+    """Send a message via Telegram Bot API.
+
+    If chat_id is provided, sends to that specific chat.
+    Otherwise sends to all chat IDs in TELEGRAM_CHAT_ID (comma-separated).
+    """
     token = os.getenv("TELEGRAM_BOT_TOKEN")
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not token or not chat_id:
+    chat_ids_env = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_ids_env:
         return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat_id, "text": message},
-            timeout=10,
-        )
-    except requests.exceptions.RequestException:
-        APP.logger.exception("failed to send telegram message")
+    targets = [chat_id] if chat_id else [c.strip() for c in chat_ids_env.split(",")]
+    for target in targets:
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": target, "text": message},
+                timeout=10,
+            )
+        except requests.exceptions.RequestException:
+            APP.logger.exception("failed to send telegram message to %s", target)
 
 
 def check_stale_temperature() -> None:

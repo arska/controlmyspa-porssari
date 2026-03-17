@@ -494,6 +494,34 @@ class TestTelegram:
         assert kwargs["json"]["chat_id"] == "123"
         assert kwargs["json"]["text"] == "hello"
 
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "111,222"},
+    )
+    @patch("app.requests.post")
+    def test_send_telegram_multiple_chat_ids(self, mock_post):
+        """send_telegram sends to all chat IDs when no specific chat_id given."""
+        mock_post.return_value = MagicMock(status_code=200)
+        with app_module.APP.app_context():
+            app_module.send_telegram("hello")
+        assert mock_post.call_count == 2
+        chat_ids = [c.kwargs["json"]["chat_id"] for c in mock_post.call_args_list]
+        assert "111" in chat_ids
+        assert "222" in chat_ids
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "111,222"},
+    )
+    @patch("app.requests.post")
+    def test_send_telegram_specific_chat_id(self, mock_post):
+        """send_telegram sends to specific chat_id when provided."""
+        mock_post.return_value = MagicMock(status_code=200)
+        with app_module.APP.app_context():
+            app_module.send_telegram("hello", chat_id="333")
+        mock_post.assert_called_once()
+        assert mock_post.call_args.kwargs["json"]["chat_id"] == "333"
+
     @patch("app.requests.post")
     def test_send_telegram_no_config_does_nothing(self, mock_post):
         """send_telegram does nothing if env vars are missing."""
