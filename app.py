@@ -35,6 +35,9 @@ temperature_history: collections.deque[dict] = collections.deque(maxlen=192)
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
+last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+stale_alert_active = False
+
 
 def send_telegram(message: str) -> None:
     """Send a message via Telegram Bot API."""
@@ -50,6 +53,55 @@ def send_telegram(message: str) -> None:
         )
     except requests.exceptions.RequestException:
         APP.logger.exception("failed to send telegram message")
+
+
+def check_stale_temperature() -> None:
+    """Check if temperature readings are stale and alert via Telegram."""
+    global last_stale_alert_time, stale_alert_active  # noqa: PLW0603
+
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    history = list(temperature_history)
+
+    if len(history) < 3:  # noqa: PLR2004
+        return
+
+    # Determine if we're in heating mode
+    latest = history[-1]
+    heating = latest["desired_temp"] >= temp_high and latest["current_temp"] < temp_high
+    threshold = 3 if heating else 25
+    window = history[-threshold:]
+
+    if len(window) < threshold:
+        return
+
+    temps = [r["current_temp"] for r in window]
+    is_stale = (max(temps) - min(temps)) < 0.5  # noqa: PLR2004
+
+    if is_stale:
+        if stale_alert_active:
+            return
+        # Check 8h suppression
+        if (
+            datetime.datetime.now(tz=datetime.UTC) - last_stale_alert_time
+        ).total_seconds() < 8 * 3600:
+            return
+        mode = "heating" if heating else "idle"
+        duration = f"{threshold * 15}min"
+        send_telegram(
+            f"\u26a0\ufe0f Spa temperature stuck at {latest['current_temp']}\u00b0C"
+            f" for {duration} ({mode} mode,"
+            f" desired {latest['desired_temp']}\u00b0C)."
+            f" Gateway may be offline."
+        )
+        last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
+        stale_alert_active = True
+    elif stale_alert_active:
+        send_telegram(
+            f"\u2705 Spa temperature is changing again"
+            f" (now {latest['current_temp']}\u00b0C)."
+            f" Gateway appears to be back online."
+        )
+        stale_alert_active = False
 
 
 """

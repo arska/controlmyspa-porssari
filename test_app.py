@@ -19,6 +19,10 @@ def _reset_state():
         0, tz=datetime.UTC
     )
     app_module.cache.clear()
+    app_module.last_stale_alert_time = datetime.datetime.fromtimestamp(
+        0, tz=datetime.UTC
+    )
+    app_module.stale_alert_active = False
     yield
 
 
@@ -483,3 +487,99 @@ class TestTelegram:
         with app_module.APP.app_context():
             app_module.send_telegram("hello")
         mock_post.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_stale_alert_heating_mode(self, mock_tg):
+        """Alert after 3 identical readings when heating."""
+        for _ in range(3):
+            app_module.temperature_history.append(
+                {"time": "t", "current_temp": 30.0, "desired_temp": 37}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_called_once()
+        assert "stuck" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_stale_alert_general_mode(self, mock_tg):
+        """Alert after 25 identical readings in general mode."""
+        for _ in range(25):
+            app_module.temperature_history.append(
+                {"time": "t", "current_temp": 30.0, "desired_temp": 10}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_called_once()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_no_alert_when_temp_changing(self, mock_tg):
+        """No alert when temperatures are changing."""
+        for i in range(25):
+            app_module.temperature_history.append(
+                {"time": "t", "current_temp": 30.0 + i * 0.5, "desired_temp": 37}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_stale_alert_suppressed_8h(self, mock_tg):
+        """Alert suppressed for 8h after first alert."""
+        app_module.last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
+        for _ in range(25):
+            app_module.temperature_history.append(
+                {"time": "t", "current_temp": 30.0, "desired_temp": 10}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_recovery_message(self, mock_tg):
+        """Recovery message sent when temp changes after stale alert."""
+        app_module.last_stale_alert_time = datetime.datetime.now(
+            tz=datetime.UTC
+        ) - datetime.timedelta(hours=1)
+        app_module.stale_alert_active = True
+        for i in range(5):
+            app_module.temperature_history.append(
+                {"time": "t", "current_temp": 30.0 + i, "desired_temp": 37}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_called_once()
+        assert "back" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_not_enough_readings_no_alert(self, mock_tg):
+        """No alert with insufficient readings."""
+        app_module.temperature_history.append(
+            {"time": "t", "current_temp": 30.0, "desired_temp": 37}
+        )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_not_called()
