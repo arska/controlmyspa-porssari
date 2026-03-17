@@ -212,6 +212,21 @@ def initialize() -> None:
     )
     send_telegram("\U0001f6c1 controlmyspa-porssari started")
 
+    # Register Telegram webhook if URL is configured
+    webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL")
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if webhook_url and token:
+        full_url = f"{webhook_url.rstrip('/')}/telegram/{token}"
+        try:
+            requests.post(
+                f"https://api.telegram.org/bot{token}/setWebhook",
+                json={"url": full_url},
+                timeout=10,
+            )
+            APP.logger.info("registered telegram webhook: %s", full_url)
+        except requests.exceptions.RequestException:
+            APP.logger.exception("failed to register telegram webhook")
+
 
 def update_porssari() -> None:
     """Fetch new configuration from porssari.fi.

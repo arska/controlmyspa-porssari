@@ -798,3 +798,37 @@ class TestInitialize:
         app_module.initialize()
         mock_tg.assert_called_once()
         assert "start" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TELEGRAM_WEBHOOK_URL": "https://example.com",
+        },
+    )
+    @patch("app.requests.post")
+    @patch("app.scheduler")
+    def test_registers_telegram_webhook(self, mock_scheduler, mock_post):
+        """initialize() registers Telegram webhook on startup."""
+        mock_post.return_value = MagicMock(status_code=200)
+        app_module.initialize()
+        webhook_calls = [c for c in mock_post.call_args_list if "setWebhook" in str(c)]
+        assert len(webhook_calls) == 1
+        assert "https://example.com/telegram/tok" in str(webhook_calls[0])
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+    )
+    @patch("app.requests.post")
+    @patch("app.scheduler")
+    def test_skips_webhook_without_url(self, mock_scheduler, mock_post):
+        """initialize() skips webhook registration when TELEGRAM_WEBHOOK_URL not set."""
+        mock_post.return_value = MagicMock(status_code=200)
+        app_module.initialize()
+        webhook_calls = [c for c in mock_post.call_args_list if "setWebhook" in str(c)]
+        assert len(webhook_calls) == 0
