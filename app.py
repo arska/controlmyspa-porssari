@@ -36,7 +36,7 @@ temperature_history: collections.deque[dict] = collections.deque(maxlen=192)
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
 last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
-stale_alert_active = False
+STALE_ALERT_ACTIVE = False
 
 
 def send_telegram(message: str) -> None:
@@ -57,7 +57,7 @@ def send_telegram(message: str) -> None:
 
 def check_stale_temperature() -> None:
     """Check if temperature readings are stale and alert via Telegram."""
-    global last_stale_alert_time, stale_alert_active  # noqa: PLW0603
+    global last_stale_alert_time, STALE_ALERT_ACTIVE  # noqa: PLW0603
 
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     history = list(temperature_history)
@@ -67,7 +67,7 @@ def check_stale_temperature() -> None:
 
     # Determine if we're in heating mode
     latest = history[-1]
-    heating = latest["desired_temp"] >= temp_high and latest["current_temp"] < temp_high
+    heating = latest["desired_temp"] >= temp_high > latest["current_temp"]
     threshold = 3 if heating else 25
     window = history[-threshold:]
 
@@ -78,7 +78,7 @@ def check_stale_temperature() -> None:
     is_stale = (max(temps) - min(temps)) < 0.5  # noqa: PLR2004
 
     if is_stale:
-        if stale_alert_active:
+        if STALE_ALERT_ACTIVE:
             return
         # Check 8h suppression
         if (
@@ -94,14 +94,14 @@ def check_stale_temperature() -> None:
             f" Gateway may be offline."
         )
         last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
-        stale_alert_active = True
-    elif stale_alert_active:
+        STALE_ALERT_ACTIVE = True
+    elif STALE_ALERT_ACTIVE:
         send_telegram(
             f"\u2705 Spa temperature is changing again"
             f" (now {latest['current_temp']}\u00b0C)."
             f" Gateway appears to be back online."
         )
-        stale_alert_active = False
+        STALE_ALERT_ACTIVE = False
 
 
 """

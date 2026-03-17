@@ -22,7 +22,7 @@ def _reset_state():
     app_module.last_stale_alert_time = datetime.datetime.fromtimestamp(
         0, tz=datetime.UTC
     )
-    app_module.stale_alert_active = False
+    app_module.STALE_ALERT_ACTIVE = False
     yield
 
 
@@ -573,7 +573,7 @@ class TestTelegram:
         app_module.last_stale_alert_time = datetime.datetime.now(
             tz=datetime.UTC
         ) - datetime.timedelta(hours=1)
-        app_module.stale_alert_active = True
+        app_module.STALE_ALERT_ACTIVE = True
         for i in range(5):
             app_module.temperature_history.append(
                 {"time": "t", "current_temp": 30.0 + i, "desired_temp": 37}

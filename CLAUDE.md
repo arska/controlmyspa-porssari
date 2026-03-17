@@ -47,6 +47,8 @@ TEMP_LOW=27          # Temperature during expensive hours
 TEMP_OVERRIDE=0      # If non-zero, overrides all logic with this temp
 PORT=8080            # Web server port
 SENTRY_URL           # Optional Sentry DSN for error tracking
+TELEGRAM_BOT_TOKEN   # Optional Telegram bot token for stale temp alerts
+TELEGRAM_CHAT_ID     # Optional Telegram chat ID for alert messages
 ```
 
 ## Development Workflow
