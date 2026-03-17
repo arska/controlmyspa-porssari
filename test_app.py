@@ -186,20 +186,23 @@ class TestOverrideAPI:
         )
 
     @patch("app.scheduler")
-    def test_disable_override(self, mock_scheduler, client):
-        """Disabling override resets endtime and triggers control."""
+    @patch("app.set_temp")
+    def test_disable_override(self, mock_set_temp, mock_scheduler, client):
+        """Disabling override sets TEMP_LOW, resets endtime, and triggers control."""
         # First enable
         app_module.manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=12)
         # Then disable
-        resp = client.post(
-            "/api/override",
-            json={"action": "disable"},
-            content_type="application/json",
-        )
+        with patch.dict("os.environ", {"TEMP_LOW": "10"}):
+            resp = client.post(
+                "/api/override",
+                json={"action": "disable"},
+                content_type="application/json",
+            )
         data = resp.get_json()
         assert data["override_active"] is False
+        mock_set_temp.assert_called_once_with(10)
         mock_scheduler.add_job.assert_called_once()
 
     def test_invalid_action(self, client):
@@ -699,11 +702,15 @@ class TestTelegramWebhook:
         {
             "TELEGRAM_BOT_TOKEN": "tok",
             "TELEGRAM_CHAT_ID": "123",
+            "TEMP_LOW": "10",
         },
     )
     @patch("app.send_telegram")
     @patch("app.scheduler")
-    def test_override_command_toggles(self, mock_scheduler, mock_tg, client):
+    @patch("app.set_temp")
+    def test_override_command_toggles(
+        self, mock_set_temp, mock_scheduler, mock_tg, client
+    ):
         """Bot responds to /override by toggling override."""
         # Enable
         client.post(
@@ -721,6 +728,7 @@ class TestTelegramWebhook:
         assert app_module.manual_override_endtime == datetime.datetime.fromtimestamp(
             0, tz=datetime.UTC
         )
+        mock_set_temp.assert_called_once_with(10)
 
     @patch.dict(
         "os.environ",

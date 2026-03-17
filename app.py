@@ -467,7 +467,9 @@ def api_override() -> flask.Response:
     elif action == "disable":
         manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
         APP.logger.info("manual override disabled via web GUI")
-        # trigger a control run to apply the correct temperature immediately
+        # set temp_low first so set_temp() doesn't re-detect manual override
+        set_temp(int(os.getenv("TEMP_LOW", "0")))
+        # then trigger a control run to adjust to the correct schedule temp
         scheduler.add_job(
             control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
         )
@@ -628,6 +630,9 @@ def _handle_telegram_override(chat_id: str) -> None:
     global manual_override_endtime  # noqa: PLW0603
     if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
         manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+        # set temp_low first so set_temp() doesn't re-detect manual override
+        set_temp(int(os.getenv("TEMP_LOW", "0")))
+        # then trigger a control run to adjust to the correct schedule temp
         scheduler.add_job(
             control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
         )
