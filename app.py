@@ -196,6 +196,7 @@ def initialize() -> None:
         max_instances=1,
         next_run_time=datetime.datetime.now(tz=datetime.UTC),
     )
+    send_telegram("\U0001f6c1 controlmyspa-porssari started")
 
 
 def update_porssari() -> None:
