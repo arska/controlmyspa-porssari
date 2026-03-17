@@ -529,6 +529,17 @@ class TestTelegram:
             app_module.send_telegram("hello")
         mock_post.assert_not_called()
 
+    @patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "111, 222 ,333"})
+    def test_get_allowed_chat_ids(self):
+        """get_allowed_chat_ids parses comma-separated list with whitespace."""
+        result = app_module.get_allowed_chat_ids()
+        assert result == {"111", "222", "333"}
+
+    def test_get_allowed_chat_ids_empty(self):
+        """get_allowed_chat_ids returns empty set when env var missing."""
+        result = app_module.get_allowed_chat_ids()
+        assert result == set()
+
     @patch.dict(
         "os.environ",
         {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},

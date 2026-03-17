@@ -61,6 +61,14 @@ def send_telegram(message: str, *, chat_id: str | None = None) -> None:
             APP.logger.exception("failed to send telegram message to %s", target)
 
 
+def get_allowed_chat_ids() -> set[str]:
+    """Return set of allowed Telegram chat IDs from env var."""
+    chat_ids_env = os.getenv("TELEGRAM_CHAT_ID", "")
+    if not chat_ids_env:
+        return set()
+    return {c.strip() for c in chat_ids_env.split(",")}
+
+
 def check_stale_temperature() -> None:
     """Check if temperature readings are stale and alert via Telegram."""
     global last_stale_alert_time, STALE_ALERT_ACTIVE  # noqa: PLW0603
