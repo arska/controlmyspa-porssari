@@ -637,6 +637,156 @@ class TestTelegram:
         mock_tg.assert_not_called()
 
 
+class TestTelegramWebhook:
+    """Tests for Telegram webhook route."""
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_status_command(self, mock_tg, client):
+        """Bot responds to /status with temperature info."""
+        app_module.cache.set("pool", {"current_temp": 35.0, "desired_temp": 37})
+        resp = client.post(
+            "/telegram/tok", json={"message": {"chat": {"id": 123}, "text": "/status"}}
+        )
+        assert resp.status_code == 200
+        mock_tg.assert_called_once()
+        reply_text = mock_tg.call_args[0][0]
+        assert "35" in reply_text
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_unauthorized_chat_rejected(self, mock_tg, client):
+        """Messages from unauthorized chat IDs are rejected."""
+        resp = client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 999}, "text": "/status"}},
+        )
+        assert resp.status_code == 200
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_wrong_token_rejected(self, mock_tg, client):
+        """Webhook with wrong token returns 404."""
+        resp = client.post(
+            "/telegram/wrong",
+            json={"message": {"chat": {"id": 123}, "text": "/status"}},
+        )
+        assert resp.status_code == 404
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+    )
+    @patch("app.send_telegram")
+    @patch("app.scheduler")
+    def test_override_command_toggles(self, mock_scheduler, mock_tg, client):
+        """Bot responds to /override by toggling override."""
+        # Enable
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/override"}},
+        )
+        assert app_module.manual_override_endtime > datetime.datetime.now(
+            tz=datetime.UTC
+        )
+        # Disable
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/override"}},
+        )
+        assert app_module.manual_override_endtime == datetime.datetime.fromtimestamp(
+            0, tz=datetime.UTC
+        )
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
+        },
+    )
+    @patch("app.controlmyspa.ControlMySpa")
+    @patch("app.send_telegram")
+    def test_heat_command(self, mock_tg, mock_spa_cls, client):
+        """Bot responds to /heat by setting heat override."""
+        mock_spa = MagicMock()
+        mock_spa.current_temp = 35
+        mock_spa_cls.return_value = mock_spa
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/heat"}},
+        )
+        assert app_module.manual_override_endtime > datetime.datetime.now(
+            tz=datetime.UTC
+        )
+        mock_tg.assert_called()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_schedule_command(self, mock_tg, client, sample_porssari_config):
+        """Bot responds to /schedule with porssari schedule."""
+        app_module.porssari_config = sample_porssari_config
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/schedule"}},
+        )
+        mock_tg.assert_called_once()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_unknown_command_shows_help(self, mock_tg, client):
+        """Unknown command returns help text."""
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/unknown"}},
+        )
+        mock_tg.assert_called_once()
+        reply = mock_tg.call_args[0][0]
+        assert "/status" in reply
+        assert "/override" in reply
+        assert "/heat" in reply
+        assert "/schedule" in reply
+
+
 class TestInitialize:
     """Tests for the initialize() function."""
 

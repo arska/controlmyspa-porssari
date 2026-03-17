@@ -546,6 +546,151 @@ def api_temperatures() -> flask.Response:
     )
 
 
+@APP.route("/telegram/<token>", methods=["POST"])
+def telegram_webhook(token: str) -> flask.Response:
+    """Handle incoming Telegram bot messages."""
+    if token != os.getenv("TELEGRAM_BOT_TOKEN"):
+        flask.abort(404)
+
+    data = flask.request.get_json(silent=True) or {}
+    message = data.get("message", {})
+    chat_id = str(message.get("chat", {}).get("id", ""))
+    text = message.get("text", "").strip()
+
+    if chat_id not in get_allowed_chat_ids():
+        return flask.jsonify({"ok": True})
+
+    if text == "/status":
+        _handle_telegram_status(chat_id)
+    elif text == "/override":
+        _handle_telegram_override(chat_id)
+    elif text == "/heat":
+        _handle_telegram_heat(chat_id)
+    elif text == "/schedule":
+        _handle_telegram_schedule(chat_id)
+    else:
+        send_telegram(
+            "Available commands:\n"
+            "/status - Current temperature and status\n"
+            "/override - Toggle manual override\n"
+            "/heat - Start heating\n"
+            "/schedule - Show porssari schedule",
+            chat_id=chat_id,
+        )
+
+    return flask.jsonify({"ok": True})
+
+
+def _handle_telegram_status(chat_id: str) -> None:
+    """Handle /status command."""
+    pool = cache.get("pool")
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    override_active = manual_override_endtime > datetime.datetime.now(tz=datetime.UTC)
+
+    if pool:
+        lines = [
+            f"\U0001f321 Current: {pool['current_temp']}\u00b0C",
+            f"\U0001f3af Desired: {pool['desired_temp']}\u00b0C",
+            f"\u2b06\ufe0f TEMP_HIGH: {temp_high}\u00b0C",
+        ]
+        if pool["current_temp"] < temp_high:
+            remaining = temp_high - pool["current_temp"]
+            minutes = int(remaining / HEATING_RATE_PER_HOUR * 60)
+            lines.append(f"\u23f1 Est. heating time: {minutes}min")
+        if override_active:
+            tz = ZoneInfo("Europe/Helsinki")
+            lines.append(
+                f"\u26a0\ufe0f Manual override until"
+                f" {manual_override_endtime.astimezone(tz).strftime('%H:%M')}"
+            )
+        send_telegram("\n".join(lines), chat_id=chat_id)
+    else:
+        send_telegram("\u274c No pool data available", chat_id=chat_id)
+
+
+def _handle_telegram_override(chat_id: str) -> None:
+    """Handle /override command -- toggle on/off."""
+    global manual_override_endtime  # noqa: PLW0603
+    if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
+        manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+        scheduler.add_job(
+            control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
+        )
+        send_telegram("\u2705 Manual override disabled", chat_id=chat_id)
+    else:
+        manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=12)
+        tz = ZoneInfo("Europe/Helsinki")
+        until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
+        send_telegram(
+            f"\u23f8 Manual override enabled for 12h (until {until})",
+            chat_id=chat_id,
+        )
+
+
+def _handle_telegram_heat(chat_id: str) -> None:
+    """Handle /heat command -- start heating."""
+    global manual_override_endtime  # noqa: PLW0603
+    override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
+    manual_override_endtime = datetime.datetime.now(
+        tz=datetime.UTC
+    ) + datetime.timedelta(hours=12)
+    try:
+        for attempt in tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type(
+                requests.exceptions.RequestException
+            ),
+            wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+            stop=tenacity.stop_after_attempt(5),
+            before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+        ):
+            with attempt:
+                api = controlmyspa.ControlMySpa(
+                    os.getenv("CONTROLMYSPA_USER"),
+                    os.getenv("CONTROLMYSPA_PASS"),
+                )
+                api.desired_temp = override_temp
+                pool = {
+                    "desired_temp": override_temp,
+                    "current_temp": api.current_temp,
+                }
+                cache.set("pool", pool, timeout=15 * 60)
+                temperature_history.append(
+                    {
+                        "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                        "current_temp": pool["current_temp"],
+                        "desired_temp": pool["desired_temp"],
+                    }
+                )
+                send_telegram(
+                    f"\U0001f525 Heating to {override_temp}\u00b0C"
+                    f" (current: {pool['current_temp']}\u00b0C)",
+                    chat_id=chat_id,
+                )
+    except tenacity.RetryError:
+        send_telegram("\u274c Failed to set heating", chat_id=chat_id)
+
+
+def _handle_telegram_schedule(chat_id: str) -> None:
+    """Handle /schedule command."""
+    if not porssari_config.get("Channel1"):
+        send_telegram("\u274c No schedule available", chat_id=chat_id)
+        return
+
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    temp_low = int(os.getenv("TEMP_LOW", "0"))
+    lines = ["\U0001f4cb Porssari schedule:"]
+    for hour in range(24):
+        command = porssari_config["Channel1"].get(str(hour))
+        if command is None:
+            continue
+        temp = temp_high if command == "1" else temp_low
+        marker = "\U0001f525" if command == "1" else "\u2744\ufe0f"
+        lines.append(f"{hour:02d}:00 {marker} {temp}\u00b0C")
+    send_telegram("\n".join(lines), chat_id=chat_id)
+
+
 if __name__ == "__main__":
     load_dotenv()
     sentry_sdk.init(
