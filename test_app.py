@@ -456,3 +456,30 @@ class TestUpdatePorssari:
             app_module.update_porssari()
 
         assert app_module.porssari_config == config
+
+
+# --- Telegram tests ---
+
+
+class TestTelegram:
+    """Tests for Telegram notification functions."""
+
+    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"})
+    @patch("app.requests.post")
+    def test_send_telegram_sends_message(self, mock_post):
+        """send_telegram sends a message via Telegram Bot API."""
+        mock_post.return_value = MagicMock(status_code=200)
+        with app_module.APP.app_context():
+            app_module.send_telegram("hello")
+        mock_post.assert_called_once()
+        args, kwargs = mock_post.call_args
+        assert "tok" in args[0]
+        assert kwargs["json"]["chat_id"] == "123"
+        assert kwargs["json"]["text"] == "hello"
+
+    @patch("app.requests.post")
+    def test_send_telegram_no_config_does_nothing(self, mock_post):
+        """send_telegram does nothing if env vars are missing."""
+        with app_module.APP.app_context():
+            app_module.send_telegram("hello")
+        mock_post.assert_not_called()

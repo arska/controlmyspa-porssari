@@ -35,6 +35,23 @@ temperature_history: collections.deque[dict] = collections.deque(maxlen=192)
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
+
+def send_telegram(message: str) -> None:
+    """Send a message via Telegram Bot API."""
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        return
+    try:
+        requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat_id, "text": message},
+            timeout=10,
+        )
+    except requests.exceptions.RequestException:
+        APP.logger.exception("failed to send telegram message")
+
+
 """
 Example porssari.fi config:
 {'Channel1': {'0': '0',
