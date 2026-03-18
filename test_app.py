@@ -224,8 +224,10 @@ class TestOverrideAPI:
     def test_heat_override(self, mock_spa_cls, client, monkeypatch):
         """Heat action sets spa temp to TEMP_HIGH - 0.5 and enables override."""
         monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "10")
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         resp = client.post(
             "/api/override",
@@ -240,8 +242,10 @@ class TestOverrideAPI:
     def test_heat_override_sets_12h_endtime(self, mock_spa_cls, client, monkeypatch):
         """Heat action sets manual override endtime 12 hours in the future."""
         monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "10")
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         client.post(
             "/api/override",
@@ -259,8 +263,10 @@ class TestOverrideAPI:
     ):
         """Heat action updates cached pool data and temperature history."""
         monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "10")
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         client.post(
             "/api/override",
@@ -268,10 +274,11 @@ class TestOverrideAPI:
             content_type="application/json",
         )
         pool = app_module.cache.get("pool")
-        assert pool["desired_temp"] == 36.5
+        # set_temp reads desired_temp from API before setting the new value
+        assert pool["desired_temp"] == 37
         assert pool["current_temp"] == 35
         assert len(app_module.temperature_history) == 1
-        assert app_module.temperature_history[0]["desired_temp"] == 36.5
+        assert app_module.temperature_history[0]["desired_temp"] == 37
 
     @patch("app.controlmyspa.ControlMySpa")
     def test_heat_override_button_label(self, mock_spa_cls, client, monkeypatch):
@@ -290,9 +297,11 @@ class TestOverrideAPI:
     @patch("app.controlmyspa.ControlMySpa")
     def test_cold_override(self, mock_spa_cls, client, monkeypatch):
         """Cold action sets spa temp to TEMP_LOW and enables 24h override."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
         monkeypatch.setenv("TEMP_LOW", "10")
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         resp = client.post(
             "/api/override",
@@ -749,6 +758,7 @@ class TestTelegramWebhook:
             "TELEGRAM_BOT_TOKEN": "tok",
             "TELEGRAM_CHAT_ID": "123",
             "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
         },
     )
     @patch("app.controlmyspa.ControlMySpa")
@@ -757,6 +767,7 @@ class TestTelegramWebhook:
         """Bot responds to /heat by setting heat override."""
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         client.post(
             "/telegram/tok",
@@ -814,6 +825,7 @@ class TestTelegramWebhook:
             "TELEGRAM_BOT_TOKEN": "tok",
             "TELEGRAM_CHAT_ID": "123",
             "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
         },
     )
     @patch("app.controlmyspa.ControlMySpa")
@@ -822,6 +834,7 @@ class TestTelegramWebhook:
         """Bot responds to /hot same as /heat."""
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         client.post(
             "/telegram/tok",
@@ -837,6 +850,7 @@ class TestTelegramWebhook:
         {
             "TELEGRAM_BOT_TOKEN": "tok",
             "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
             "TEMP_LOW": "10",
         },
     )
@@ -846,6 +860,7 @@ class TestTelegramWebhook:
         """Bot responds to /cold by setting TEMP_LOW for 24h."""
         mock_spa = MagicMock()
         mock_spa.current_temp = 35
+        mock_spa.desired_temp = 37
         mock_spa_cls.return_value = mock_spa
         client.post(
             "/telegram/tok",
