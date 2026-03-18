@@ -287,6 +287,26 @@ class TestOverrideAPI:
         assert b"36.5" in resp.data
         assert b"Keep the pool heated to 36.5" in resp.data
 
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_cold_override(self, mock_spa_cls, client, monkeypatch):
+        """Cold action sets spa temp to TEMP_LOW and enables 24h override."""
+        monkeypatch.setenv("TEMP_LOW", "10")
+        mock_spa = MagicMock()
+        mock_spa.current_temp = 35
+        mock_spa_cls.return_value = mock_spa
+        resp = client.post(
+            "/api/override",
+            json={"action": "cold"},
+            content_type="application/json",
+        )
+        data = resp.get_json()
+        assert data["override_active"] is True
+        assert mock_spa.desired_temp == 10
+        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(
+            hours=23, minutes=59
+        )
+        assert app_module.manual_override_endtime > expected_min
+
 
 # --- Control logic tests ---
 
@@ -784,8 +804,61 @@ class TestTelegramWebhook:
         reply = mock_tg.call_args[0][0]
         assert "/status" in reply
         assert "/override" in reply
-        assert "/heat" in reply
+        assert "/hot" in reply
+        assert "/cold" in reply
         assert "/schedule" in reply
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
+        },
+    )
+    @patch("app.controlmyspa.ControlMySpa")
+    @patch("app.send_telegram")
+    def test_hot_command(self, mock_tg, mock_spa_cls, client):
+        """Bot responds to /hot same as /heat."""
+        mock_spa = MagicMock()
+        mock_spa.current_temp = 35
+        mock_spa_cls.return_value = mock_spa
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/hot"}},
+        )
+        assert app_module.manual_override_endtime > datetime.datetime.now(
+            tz=datetime.UTC
+        )
+        mock_tg.assert_called()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_LOW": "10",
+        },
+    )
+    @patch("app.controlmyspa.ControlMySpa")
+    @patch("app.send_telegram")
+    def test_cold_command(self, mock_tg, mock_spa_cls, client):
+        """Bot responds to /cold by setting TEMP_LOW for 24h."""
+        mock_spa = MagicMock()
+        mock_spa.current_temp = 35
+        mock_spa_cls.return_value = mock_spa
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/cold"}},
+        )
+        assert app_module.manual_override_endtime > datetime.datetime.now(
+            tz=datetime.UTC
+        )
+        expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(
+            hours=23, minutes=59
+        )
+        assert app_module.manual_override_endtime > expected_min
+        mock_tg.assert_called()
 
 
 class TestInitialize:

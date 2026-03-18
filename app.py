@@ -458,6 +458,7 @@ def status() -> str:
         heat_estimate_minutes=heat_estimate_minutes,
         heat_estimate_time=heat_estimate_time,
         temp_high=temp_high,
+        temp_low=int(os.getenv("TEMP_LOW", "0")),
     )
 
 
@@ -523,6 +524,49 @@ def api_override() -> flask.Response:
                     )
         except tenacity.RetryError as exception:
             APP.logger.info("heat override failed: %s", exception)
+    elif action == "cold":
+        override_temp = int(os.getenv("TEMP_LOW", "0"))
+        manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=24)
+        APP.logger.info(
+            "cold override to %s°C via web GUI until %s",
+            override_temp,
+            manual_override_endtime,
+        )
+        try:
+            for attempt in tenacity.Retrying(
+                retry=tenacity.retry_if_exception_type(
+                    requests.exceptions.RequestException
+                ),
+                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+                stop=tenacity.stop_after_attempt(5),
+                before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+            ):
+                with attempt:
+                    api = controlmyspa.ControlMySpa(
+                        os.getenv("CONTROLMYSPA_USER"),
+                        os.getenv("CONTROLMYSPA_PASS"),
+                    )
+                    api.desired_temp = override_temp
+                    pool = {
+                        "desired_temp": override_temp,
+                        "current_temp": api.current_temp,
+                    }
+                    cache.set("pool", pool, timeout=15 * 60)
+                    temperature_history.append(
+                        {
+                            "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                            "current_temp": pool["current_temp"],
+                            "desired_temp": pool["desired_temp"],
+                        }
+                    )
+                    APP.logger.info(
+                        "set desired temp %s via cold override",
+                        override_temp,
+                    )
+        except tenacity.RetryError as exception:
+            APP.logger.info("cold override failed: %s", exception)
     return flask.jsonify(
         {
             "override_active": manual_override_endtime
@@ -588,8 +632,10 @@ def telegram_webhook(token: str) -> flask.Response:
         _handle_telegram_status(chat_id)
     elif text == "/override":
         _handle_telegram_override(chat_id)
-    elif text == "/heat":
+    elif text in ("/heat", "/hot"):
         _handle_telegram_heat(chat_id)
+    elif text == "/cold":
+        _handle_telegram_cold(chat_id)
     elif text == "/schedule":
         _handle_telegram_schedule(chat_id)
     else:
@@ -597,7 +643,8 @@ def telegram_webhook(token: str) -> flask.Response:
             "Available commands:\n"
             "/status - Current temperature and status\n"
             "/override - Toggle manual override\n"
-            "/heat - Start heating\n"
+            "/hot - Heat to TEMP_HIGH-0.5 for 12h\n"
+            "/cold - Cool to TEMP_LOW for 24h\n"
             "/schedule - Show porssari schedule",
             chat_id=chat_id,
         )
@@ -693,6 +740,49 @@ def _handle_telegram_heat(chat_id: str) -> None:
                 )
     except tenacity.RetryError:
         send_telegram("\u274c Failed to set heating", chat_id=chat_id)
+
+
+def _handle_telegram_cold(chat_id: str) -> None:
+    """Handle /cold command -- set TEMP_LOW for 24h."""
+    global manual_override_endtime  # noqa: PLW0603
+    override_temp = int(os.getenv("TEMP_LOW", "0"))
+    manual_override_endtime = datetime.datetime.now(
+        tz=datetime.UTC
+    ) + datetime.timedelta(hours=24)
+    try:
+        for attempt in tenacity.Retrying(
+            retry=tenacity.retry_if_exception_type(
+                requests.exceptions.RequestException
+            ),
+            wait=tenacity.wait_random_exponential(multiplier=1, max=60),
+            stop=tenacity.stop_after_attempt(5),
+            before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
+        ):
+            with attempt:
+                api = controlmyspa.ControlMySpa(
+                    os.getenv("CONTROLMYSPA_USER"),
+                    os.getenv("CONTROLMYSPA_PASS"),
+                )
+                api.desired_temp = override_temp
+                pool = {
+                    "desired_temp": override_temp,
+                    "current_temp": api.current_temp,
+                }
+                cache.set("pool", pool, timeout=15 * 60)
+                temperature_history.append(
+                    {
+                        "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                        "current_temp": pool["current_temp"],
+                        "desired_temp": pool["desired_temp"],
+                    }
+                )
+                send_telegram(
+                    f"\u2744\ufe0f Cooling to {override_temp}\u00b0C for 24h"
+                    f" (current: {pool['current_temp']}\u00b0C)",
+                    chat_id=chat_id,
+                )
+    except tenacity.RetryError:
+        send_telegram("\u274c Failed to set cooling", chat_id=chat_id)
 
 
 def _handle_telegram_schedule(chat_id: str) -> None:
