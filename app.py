@@ -293,7 +293,7 @@ def update_porssari() -> None:
                         )
 
 
-def control() -> None:
+def control(*, skip_override_detection: bool = False) -> None:
     """Set the pool temperature according to porssari instructions."""
     with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
         if not porssari_config:
@@ -303,16 +303,25 @@ def control() -> None:
         command = porssari_config.get("Channel1", {}).get(str(current_hour), "0")
         if int(os.getenv("TEMP_OVERRIDE", "0")):
             # if set, override temperature independent of hour control
-            set_temp(int(os.getenv("TEMP_OVERRIDE", "0")))
+            set_temp(
+                int(os.getenv("TEMP_OVERRIDE", "0")),
+                skip_override_detection=skip_override_detection,
+            )
         elif command == "0":
             # low temp
-            set_temp(int(os.getenv("TEMP_LOW", "0")))
+            set_temp(
+                int(os.getenv("TEMP_LOW", "0")),
+                skip_override_detection=skip_override_detection,
+            )
         else:
             # high temp
-            set_temp(int(os.getenv("TEMP_HIGH", "0")))
+            set_temp(
+                int(os.getenv("TEMP_HIGH", "0")),
+                skip_override_detection=skip_override_detection,
+            )
 
 
-def set_temp(temp: float) -> None:
+def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
     """Update the pool temperature.
 
     Also fetch the current pool temperatures and cache them for 15 minutes.
@@ -348,9 +357,11 @@ def set_temp(temp: float) -> None:
                     pool["current_temp"],
                     pool["desired_temp"],
                 )
-                if int(pool["desired_temp"]) != int(
-                    os.getenv("TEMP_HIGH", "0")
-                ) and int(pool["desired_temp"]) != int(os.getenv("TEMP_LOW", "0")):
+                if (
+                    not skip_override_detection
+                    and int(pool["desired_temp"]) != int(os.getenv("TEMP_HIGH", "0"))
+                    and int(pool["desired_temp"]) != int(os.getenv("TEMP_LOW", "0"))
+                ):
                     # somebody set a manual temperature through the pool controls
                     # let's disable porssari control for 12h
                     global manual_override_endtime  # noqa: PLW0603
@@ -467,12 +478,8 @@ def api_override() -> flask.Response:
     elif action == "disable":
         manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
         APP.logger.info("manual override disabled via web GUI")
-        # set temp_low first so set_temp() doesn't re-detect manual override
-        set_temp(int(os.getenv("TEMP_LOW", "0")))
-        # then trigger a control run to adjust to the correct schedule temp
-        scheduler.add_job(
-            control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
-        )
+        # skip override detection since API may still return stale desired_temp
+        control(skip_override_detection=True)
     elif action == "heat":
         override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
         manual_override_endtime = datetime.datetime.now(
@@ -630,12 +637,8 @@ def _handle_telegram_override(chat_id: str) -> None:
     global manual_override_endtime  # noqa: PLW0603
     if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
         manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
-        # set temp_low first so set_temp() doesn't re-detect manual override
-        set_temp(int(os.getenv("TEMP_LOW", "0")))
-        # then trigger a control run to adjust to the correct schedule temp
-        scheduler.add_job(
-            control, "date", run_date=datetime.datetime.now(tz=datetime.UTC)
-        )
+        # skip override detection since API may still return stale desired_temp
+        control(skip_override_detection=True)
         send_telegram("\u2705 Manual override disabled", chat_id=chat_id)
     else:
         manual_override_endtime = datetime.datetime.now(

@@ -185,25 +185,22 @@ class TestOverrideAPI:
             tz=datetime.UTC
         )
 
-    @patch("app.scheduler")
-    @patch("app.set_temp")
-    def test_disable_override(self, mock_set_temp, mock_scheduler, client):
-        """Disabling override sets TEMP_LOW, resets endtime, and triggers control."""
+    @patch("app.control")
+    def test_disable_override(self, mock_control, client):
+        """Disabling override resets endtime and calls control with skip flag."""
         # First enable
         app_module.manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=12)
         # Then disable
-        with patch.dict("os.environ", {"TEMP_LOW": "10"}):
-            resp = client.post(
-                "/api/override",
-                json={"action": "disable"},
-                content_type="application/json",
-            )
+        resp = client.post(
+            "/api/override",
+            json={"action": "disable"},
+            content_type="application/json",
+        )
         data = resp.get_json()
         assert data["override_active"] is False
-        mock_set_temp.assert_called_once_with(10)
-        mock_scheduler.add_job.assert_called_once()
+        mock_control.assert_called_once_with(skip_override_detection=True)
 
     def test_invalid_action(self, client):
         """Invalid action returns current state without changes."""
@@ -314,7 +311,7 @@ class TestControlLogic:
         app_module.porssari_config = {"Channel1": {str(h): "0" for h in range(24)}}
         with app_module.APP.app_context():
             app_module.control()
-        mock_set_temp.assert_called_once_with(27)
+        mock_set_temp.assert_called_once_with(27, skip_override_detection=False)
 
     @patch.dict(
         "os.environ",
@@ -326,7 +323,7 @@ class TestControlLogic:
         app_module.porssari_config = {"Channel1": {str(h): "1" for h in range(24)}}
         with app_module.APP.app_context():
             app_module.control()
-        mock_set_temp.assert_called_once_with(37)
+        mock_set_temp.assert_called_once_with(37, skip_override_detection=False)
 
     @patch.dict(
         "os.environ",
@@ -338,7 +335,7 @@ class TestControlLogic:
         app_module.porssari_config = {"Channel1": {str(h): "0" for h in range(24)}}
         with app_module.APP.app_context():
             app_module.control()
-        mock_set_temp.assert_called_once_with(40)
+        mock_set_temp.assert_called_once_with(40, skip_override_detection=False)
 
 
 # --- set_temp tests ---
@@ -702,15 +699,11 @@ class TestTelegramWebhook:
         {
             "TELEGRAM_BOT_TOKEN": "tok",
             "TELEGRAM_CHAT_ID": "123",
-            "TEMP_LOW": "10",
         },
     )
     @patch("app.send_telegram")
-    @patch("app.scheduler")
-    @patch("app.set_temp")
-    def test_override_command_toggles(
-        self, mock_set_temp, mock_scheduler, mock_tg, client
-    ):
+    @patch("app.control")
+    def test_override_command_toggles(self, mock_control, mock_tg, client):
         """Bot responds to /override by toggling override."""
         # Enable
         client.post(
@@ -728,7 +721,7 @@ class TestTelegramWebhook:
         assert app_module.manual_override_endtime == datetime.datetime.fromtimestamp(
             0, tz=datetime.UTC
         )
-        mock_set_temp.assert_called_once_with(10)
+        mock_control.assert_called_once_with(skip_override_detection=True)
 
     @patch.dict(
         "os.environ",
