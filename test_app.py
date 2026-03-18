@@ -465,6 +465,25 @@ class TestSetTemp:
             tz=datetime.UTC
         )
 
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_active_override_skips_temp_change(self, mock_api_class):
+        """set_temp returns early when manual override endtime is in future."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 35
+        mock_api.desired_temp = 33  # neither 37 nor 27
+        mock_api_class.return_value = mock_api
+        # Set an active override
+        app_module.manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=6)
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        # Should not have changed the temp — override is active
+        assert mock_api.desired_temp == 33
+
 
 # --- update_porssari tests ---
 
@@ -557,6 +576,14 @@ class TestTelegram:
         with app_module.APP.app_context():
             app_module.send_telegram("hello")
         mock_post.assert_not_called()
+
+    @patch.dict("os.environ", {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"})
+    @patch("app.requests.post", side_effect=requests.exceptions.ConnectionError("fail"))
+    def test_send_telegram_handles_exception(self, mock_post):
+        """send_telegram logs and continues on request failure."""
+        with app_module.APP.app_context():
+            app_module.send_telegram("hello")  # should not raise
+        mock_post.assert_called_once()
 
     @patch.dict("os.environ", {"TELEGRAM_CHAT_ID": "111, 222 ,333"})
     def test_get_allowed_chat_ids(self):
@@ -689,6 +716,65 @@ class TestTelegramWebhook:
         mock_tg.assert_called_once()
         reply_text = mock_tg.call_args[0][0]
         assert "35" in reply_text
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_status_command_no_pool_data(self, mock_tg, client):
+        """Bot responds to /status with error when no pool data."""
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/status"}},
+        )
+        mock_tg.assert_called_once()
+        assert "no pool data" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+            "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_status_command_with_override(self, mock_tg, client):
+        """Bot shows override info in /status when override is active."""
+        app_module.cache.set("pool", {"current_temp": 35.0, "desired_temp": 37})
+        app_module.manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=6)
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/status"}},
+        )
+        mock_tg.assert_called_once()
+        assert "override" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TELEGRAM_BOT_TOKEN": "tok",
+            "TELEGRAM_CHAT_ID": "123",
+        },
+    )
+    @patch("app.send_telegram")
+    def test_schedule_command_no_config(self, mock_tg, client):
+        """Bot responds to /schedule with error when no config."""
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/schedule"}},
+        )
+        mock_tg.assert_called_once()
+        assert "no schedule" in mock_tg.call_args[0][0].lower()
 
     @patch.dict(
         "os.environ",
