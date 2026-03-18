@@ -387,12 +387,23 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                             " the temperature until %s",
                             manual_override_endtime,
                         )
+                        tz = ZoneInfo("Europe/Helsinki")
+                        until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
+                        send_telegram(
+                            f"\U0001f6c1 Manual override detected"
+                            f" (spa set to {pool['desired_temp']}\u00b0C)."
+                            f" Pausing automatic control until {until}."
+                        )
                         return
 
                     # the manual override time expired
                     # reset the timer for the next override
                     manual_override_endtime = datetime.datetime.fromtimestamp(
                         0, tz=datetime.UTC
+                    )
+                    send_telegram(
+                        "\u2705 Manual override expired."
+                        " Resuming automatic temperature control."
                     )
                     # take control over the temperature below
 
@@ -476,26 +487,37 @@ def api_override() -> flask.Response:
             "manual override enabled via web GUI until %s",
             manual_override_endtime,
         )
+        tz = ZoneInfo("Europe/Helsinki")
+        until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
+        send_telegram(f"\u23f8 Manual override enabled via web for 12h (until {until})")
     elif action == "disable":
         manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
         APP.logger.info("manual override disabled via web GUI")
+        send_telegram(
+            "\u2705 Manual override disabled via web."
+            " Resuming automatic temperature control."
+        )
         # skip override detection since API may still return stale desired_temp
         control(skip_override_detection=True)
     elif action == "heat":
+        override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
         manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=12)
-        set_temp(
-            int(os.getenv("TEMP_HIGH", "0")) - 0.5,
-            skip_override_detection=True,
+        set_temp(override_temp, skip_override_detection=True)
+        send_telegram(
+            f"\U0001f525 Heat override enabled via web"
+            f" (target {override_temp}\u00b0C for 12h)"
         )
     elif action == "cold":
+        override_temp = int(os.getenv("TEMP_LOW", "0"))
         manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=24)
-        set_temp(
-            int(os.getenv("TEMP_LOW", "0")),
-            skip_override_detection=True,
+        set_temp(override_temp, skip_override_detection=True)
+        send_telegram(
+            f"\u2744\ufe0f Cold override enabled via web"
+            f" (target {override_temp}\u00b0C for 24h)"
         )
     return flask.jsonify(
         {
@@ -609,14 +631,17 @@ def _handle_telegram_status(chat_id: str) -> None:
         send_telegram("\u274c No pool data available", chat_id=chat_id)
 
 
-def _handle_telegram_override(chat_id: str) -> None:
+def _handle_telegram_override(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /override command -- toggle on/off."""
     global manual_override_endtime  # noqa: PLW0603
     if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
         manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
         # skip override detection since API may still return stale desired_temp
         control(skip_override_detection=True)
-        send_telegram("\u2705 Manual override disabled", chat_id=chat_id)
+        send_telegram(
+            "\u2705 Manual override disabled via Telegram."
+            " Resuming automatic temperature control."
+        )
     else:
         manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
@@ -624,12 +649,11 @@ def _handle_telegram_override(chat_id: str) -> None:
         tz = ZoneInfo("Europe/Helsinki")
         until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
         send_telegram(
-            f"\u23f8 Manual override enabled for 12h (until {until})",
-            chat_id=chat_id,
+            f"\u23f8 Manual override enabled via Telegram for 12h (until {until})"
         )
 
 
-def _handle_telegram_heat(chat_id: str) -> None:
+def _handle_telegram_heat(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /heat and /hot commands -- start heating."""
     global manual_override_endtime  # noqa: PLW0603
     override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
@@ -640,12 +664,12 @@ def _handle_telegram_heat(chat_id: str) -> None:
     pool = cache.get("pool")
     current = pool["current_temp"] if pool else "?"
     send_telegram(
-        f"\U0001f525 Heating to {override_temp}\u00b0C (current: {current}\u00b0C)",
-        chat_id=chat_id,
+        f"\U0001f525 Heat override enabled via Telegram"
+        f" (target {override_temp}\u00b0C, current: {current}\u00b0C)"
     )
 
 
-def _handle_telegram_cold(chat_id: str) -> None:
+def _handle_telegram_cold(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /cold command -- set TEMP_LOW for 24h."""
     global manual_override_endtime  # noqa: PLW0603
     override_temp = int(os.getenv("TEMP_LOW", "0"))
@@ -656,9 +680,8 @@ def _handle_telegram_cold(chat_id: str) -> None:
     pool = cache.get("pool")
     current = pool["current_temp"] if pool else "?"
     send_telegram(
-        f"\u2744\ufe0f Cooling to {override_temp}\u00b0C for 24h"
-        f" (current: {current}\u00b0C)",
-        chat_id=chat_id,
+        f"\u2744\ufe0f Cold override enabled via Telegram"
+        f" (target {override_temp}\u00b0C for 24h, current: {current}\u00b0C)"
     )
 
 
