@@ -154,8 +154,8 @@ class TestTemperatureAPI:
             assert dt <= limit, f"Future entry should be within 24h, got {dt}"
 
     def test_history_maxlen(self, client):
-        """Temperature history respects 192-point max."""
-        for i in range(200):
+        """Temperature history respects 999-point max."""
+        for i in range(1100):
             app_module.temperature_history.append(
                 {
                     "time": f"2024-01-01T{i:05d}",
@@ -163,7 +163,7 @@ class TestTemperatureAPI:
                     "desired_temp": 37,
                 }
             )
-        assert len(app_module.temperature_history) == 192
+        assert len(app_module.temperature_history) == 999
 
 
 # --- Override API tests ---
@@ -602,10 +602,12 @@ class TestTelegram:
     )
     @patch("app.send_telegram")
     def test_stale_alert_heating_mode(self, mock_tg):
-        """Alert after 3 identical readings when heating."""
-        for _ in range(3):
+        """Alert after 45min of identical readings when heating."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(3):
+            t = now - datetime.timedelta(minutes=44 - i * 15)
             app_module.temperature_history.append(
-                {"time": "t", "current_temp": 30.0, "desired_temp": 37}
+                {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 37}
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
@@ -618,10 +620,12 @@ class TestTelegram:
     )
     @patch("app.send_telegram")
     def test_stale_alert_general_mode(self, mock_tg):
-        """Alert after 25 identical readings in general mode."""
-        for _ in range(25):
+        """Alert after 6h of identical readings in general mode."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(25):
+            t = now - datetime.timedelta(minutes=359 - i * 14)
             app_module.temperature_history.append(
-                {"time": "t", "current_temp": 30.0, "desired_temp": 10}
+                {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
@@ -634,9 +638,15 @@ class TestTelegram:
     @patch("app.send_telegram")
     def test_no_alert_when_temp_changing(self, mock_tg):
         """No alert when temperatures are changing."""
+        now = datetime.datetime.now(tz=datetime.UTC)
         for i in range(25):
+            t = now - datetime.timedelta(minutes=359 - i * 14)
             app_module.temperature_history.append(
-                {"time": "t", "current_temp": 30.0 + i * 0.5, "desired_temp": 37}
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 30.0 + i * 0.5,
+                    "desired_temp": 37,
+                }
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
@@ -650,9 +660,11 @@ class TestTelegram:
     def test_stale_alert_suppressed_8h(self, mock_tg):
         """Alert suppressed for 8h after first alert."""
         app_module.last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
-        for _ in range(25):
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(25):
+            t = now - datetime.timedelta(minutes=359 - i * 14)
             app_module.temperature_history.append(
-                {"time": "t", "current_temp": 30.0, "desired_temp": 10}
+                {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
@@ -669,9 +681,11 @@ class TestTelegram:
             tz=datetime.UTC
         ) - datetime.timedelta(hours=1)
         app_module.STALE_ALERT_ACTIVE = True
+        now = datetime.datetime.now(tz=datetime.UTC)
         for i in range(5):
+            t = now - datetime.timedelta(minutes=40 - i * 10)
             app_module.temperature_history.append(
-                {"time": "t", "current_temp": 30.0 + i, "desired_temp": 37}
+                {"time": t.isoformat(), "current_temp": 30.0 + i, "desired_temp": 37}
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
@@ -685,8 +699,9 @@ class TestTelegram:
     @patch("app.send_telegram")
     def test_not_enough_readings_no_alert(self, mock_tg):
         """No alert with insufficient readings."""
+        now = datetime.datetime.now(tz=datetime.UTC)
         app_module.temperature_history.append(
-            {"time": "t", "current_temp": 30.0, "desired_temp": 37}
+            {"time": now.isoformat(), "current_temp": 30.0, "desired_temp": 37}
         )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()

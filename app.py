@@ -30,7 +30,7 @@ PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
 HEATING_RATE_PER_HOUR = 1.5
 porssari_config = {}
 # 48h of data at 15min intervals = 192 data points
-temperature_history: collections.deque[dict] = collections.deque(maxlen=192)
+temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
@@ -69,6 +69,14 @@ def get_allowed_chat_ids() -> set[str]:
     return {c.strip() for c in chat_ids_env.split(",")}
 
 
+def format_duration(total_minutes: int) -> str:
+    """Format minutes as 'Xh Ymin' or just 'Ymin' if under an hour."""
+    hours, mins = divmod(total_minutes, 60)
+    if hours > 0:
+        return f"{hours}h {mins}min"
+    return f"{mins}min"
+
+
 def check_stale_temperature() -> None:
     """Check if temperature readings are stale and alert via Telegram."""
     global last_stale_alert_time, STALE_ALERT_ACTIVE  # noqa: PLW0603
@@ -82,10 +90,16 @@ def check_stale_temperature() -> None:
     # Determine if we're in heating mode
     latest = history[-1]
     heating = latest["desired_temp"] >= temp_high > latest["current_temp"]
-    threshold = 3 if heating else 25
-    window = history[-threshold:]
+    stale_minutes = 45 if heating else 360  # 45min heating, 6h idle
 
-    if len(window) < threshold:
+    # Find readings within the stale window using actual timestamps
+    now = datetime.datetime.now(tz=datetime.UTC)
+    cutoff = now - datetime.timedelta(minutes=stale_minutes)
+    window = [
+        r for r in history if datetime.datetime.fromisoformat(r["time"]) >= cutoff
+    ]
+
+    if len(window) < 3:  # noqa: PLR2004
         return
 
     temps = [r["current_temp"] for r in window]
@@ -95,12 +109,10 @@ def check_stale_temperature() -> None:
         if STALE_ALERT_ACTIVE:
             return
         # Check 8h suppression
-        if (
-            datetime.datetime.now(tz=datetime.UTC) - last_stale_alert_time
-        ).total_seconds() < 8 * 3600:
+        if (now - last_stale_alert_time).total_seconds() < 8 * 3600:
             return
         mode = "heating" if heating else "idle"
-        duration = f"{threshold * 15}min"
+        duration = format_duration(stale_minutes)
         send_telegram(
             f"\u26a0\ufe0f Spa temperature stuck at {latest['current_temp']}\u00b0C"
             f" for {duration} ({mode} mode,"
@@ -619,7 +631,7 @@ def _handle_telegram_status(chat_id: str) -> None:
         if pool["current_temp"] < temp_high:
             remaining = temp_high - pool["current_temp"]
             minutes = int(remaining / HEATING_RATE_PER_HOUR * 60)
-            lines.append(f"\u23f1 Est. heating time: {minutes}min")
+            lines.append(f"\u23f1 Est. heating time: {format_duration(minutes)}")
         if override_active:
             tz = ZoneInfo("Europe/Helsinki")
             lines.append(
