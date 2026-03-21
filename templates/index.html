@@ -18,7 +18,6 @@
         });
     </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -172,33 +171,6 @@
                 target: p.target_temp
             }));
 
-            // Detect offline gaps (>30min between readings) and place
-            // an "Offline" label every 8 hours within each gap
-            const GAP_THRESHOLD_MS = 30 * 60 * 1000;
-            const OFFLINE_INTERVAL_MS = 8 * 60 * 60 * 1000;
-            const offlineAnnotations = {};
-            for (let i = 1; i < history.length; i++) {
-                const gap = history[i].time - history[i - 1].time;
-                if (gap > GAP_THRESHOLD_MS) {
-                    const gapStart = history[i - 1].time.getTime();
-                    const gapEnd = history[i].time.getTime();
-                    let t = gapStart + OFFLINE_INTERVAL_MS;
-                    let idx = 0;
-                    while (t < gapEnd) {
-                        offlineAnnotations['offline_' + i + '_' + idx] = {
-                            type: 'label',
-                            xValue: t,
-                            yValue: (data.temp_high + data.temp_low) / 2,
-                            content: 'Offline',
-                            color: '#e74c3c',
-                            font: { size: 12, weight: 'bold' }
-                        };
-                        t += OFFLINE_INTERVAL_MS;
-                        idx++;
-                    }
-                }
-            }
-
             new Chart(document.getElementById('tempChart'), {
                 type: 'line',
                 data: {
@@ -244,11 +216,6 @@
                             title: { display: true, text: '°C' },
                             suggestedMin: data.temp_low - 2,
                             suggestedMax: data.temp_high + 2
-                        }
-                    },
-                    plugins: {
-                        annotation: {
-                            annotations: offlineAnnotations
                         }
                     }
                 }
