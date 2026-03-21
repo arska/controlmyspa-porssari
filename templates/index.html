@@ -172,30 +172,33 @@
                 target: p.target_temp
             }));
 
-            // Detect offline gaps (>30min between readings) and place
-            // an "Offline" label every 8 hours within each gap
-            const GAP_THRESHOLD_MS = 30 * 60 * 1000;
+            // Detect offline periods where current_temp stays unchanged
+            // and place an "Offline" label every 8 hours within those stretches
             const OFFLINE_INTERVAL_MS = 8 * 60 * 60 * 1000;
             const offlineAnnotations = {};
-            for (let i = 1; i < history.length; i++) {
-                const gap = history[i].time - history[i - 1].time;
-                if (gap > GAP_THRESHOLD_MS) {
-                    const gapStart = history[i - 1].time.getTime();
-                    const gapEnd = history[i].time.getTime();
-                    let t = gapStart + OFFLINE_INTERVAL_MS;
-                    let idx = 0;
-                    while (t < gapEnd) {
-                        offlineAnnotations['offline_' + i + '_' + idx] = {
-                            type: 'label',
-                            xValue: t,
-                            yValue: (data.temp_high + data.temp_low) / 2,
-                            content: 'Offline',
-                            color: '#e74c3c',
-                            font: { size: 12, weight: 'bold' }
-                        };
-                        t += OFFLINE_INTERVAL_MS;
-                        idx++;
+            let flatStart = 0;
+            for (let i = 1; i <= history.length; i++) {
+                const changed = i === history.length || history[i].current !== history[flatStart].current;
+                if (changed) {
+                    const startMs = history[flatStart].time.getTime();
+                    const endMs = history[i - 1].time.getTime();
+                    if (endMs - startMs >= OFFLINE_INTERVAL_MS) {
+                        let t = startMs + OFFLINE_INTERVAL_MS;
+                        let idx = 0;
+                        while (t <= endMs) {
+                            offlineAnnotations['offline_' + flatStart + '_' + idx] = {
+                                type: 'label',
+                                xValue: t,
+                                yValue: history[flatStart].current,
+                                content: 'Offline',
+                                color: '#999',
+                                font: { size: 11, weight: 'bold' }
+                            };
+                            t += OFFLINE_INTERVAL_MS;
+                            idx++;
+                        }
                     }
+                    flatStart = i;
                 }
             }
 
