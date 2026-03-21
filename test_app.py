@@ -675,6 +675,28 @@ class TestTelegram:
         {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
     )
     @patch("app.send_telegram")
+    def test_stale_alert_repeats_after_8h(self, mock_tg):
+        """Alert repeats every 8h while temperature stays stale."""
+        app_module.STALE_ALERT_ACTIVE = True
+        app_module.last_stale_alert_time = datetime.datetime.now(
+            tz=datetime.UTC
+        ) - datetime.timedelta(hours=9)
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(25):
+            t = now - datetime.timedelta(minutes=359 - i * 14)
+            app_module.temperature_history.append(
+                {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_called_once()
+        assert "stuck" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
     def test_recovery_message(self, mock_tg):
         """Recovery message sent when temp changes after stale alert."""
         app_module.last_stale_alert_time = datetime.datetime.now(
