@@ -310,7 +310,7 @@ class TestOverrideAPI:
         )
         data = resp.get_json()
         assert data["override_active"] is True
-        assert mock_spa.desired_temp == 10
+        assert mock_spa.desired_temp == 10.5
         expected_min = datetime.datetime.now(tz=datetime.UTC) + datetime.timedelta(
             hours=23, minutes=59
         )
