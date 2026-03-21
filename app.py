@@ -521,7 +521,7 @@ def api_override() -> flask.Response:
             f" (target {override_temp}\u00b0C for 12h)"
         )
     elif action == "cold":
-        override_temp = int(os.getenv("TEMP_LOW", "0"))
+        override_temp = int(os.getenv("TEMP_LOW", "0")) + 0.5
         manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=24)
@@ -683,7 +683,7 @@ def _handle_telegram_heat(chat_id: str) -> None:  # noqa: ARG001  # pylint: disa
 def _handle_telegram_cold(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /cold command -- set TEMP_LOW for 24h."""
     global manual_override_endtime  # noqa: PLW0603
-    override_temp = int(os.getenv("TEMP_LOW", "0"))
+    override_temp = int(os.getenv("TEMP_LOW", "0")) + 0.5
     manual_override_endtime = datetime.datetime.now(
         tz=datetime.UTC
     ) + datetime.timedelta(hours=24)
