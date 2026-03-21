@@ -3,6 +3,10 @@
   "extends": [
     "config:recommended"
   ],
+  "lockFileMaintenance": {
+    "enabled": true,
+    "automerge": true
+  },
   "packageRules": [
     {
       "description": "Auto-merge GitHub Actions updates",
