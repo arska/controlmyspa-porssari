@@ -13,11 +13,10 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - uses: astral-sh/setup-uv@v7
-      - name: Lint with nox
-        run: uvx nox
+      - name: Lint and test with nox
+        run: uvx nox -s ruff pylint tests
 
   build:
-    needs: test
     runs-on: ubuntu-latest
     steps:
       - name: Check out the repo
@@ -32,3 +31,36 @@ jobs:
           github-sha: "${{ github.sha }}"
           action: "${{ github.event.action }}"
           merged: "${{ github.event.pull_request.merged }}"
+
+  deploy:
+    needs: [test, build]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install sops
+        uses: nhedger/setup-sops@v2
+      - name: Install age
+        uses: alessiodionisi/setup-age-action@v1.4.0
+      - name: Install oc CLI
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          oc: "4"
+          skip_cache: true
+      - name: Decrypt secret
+        env:
+          SOPS_AGE_KEY: ${{ secrets.SOPS_AGE_KEY }}
+        run: |
+          sops --decrypt --in-place deploy/secret.yaml
+          sops --decrypt --in-place deploy/ingress.yaml
+      - name: Deploy to OpenShift
+        env:
+          OPENSHIFT_TOKEN: ${{ secrets.OPENSHIFT_TOKEN }}
+          OPENSHIFT_SERVER: ${{ secrets.OPENSHIFT_SERVER }}
+          OPENSHIFT_NAMESPACE: ${{ vars.OPENSHIFT_NAMESPACE }}
+        run: |
+          oc login --token="$OPENSHIFT_TOKEN" --server="$OPENSHIFT_SERVER"
+          oc project "$OPENSHIFT_NAMESPACE"
+          oc apply -f deploy/ --server-side --force-conflicts
+          oc rollout restart deployment/controlmyspa-porssari
+          oc rollout status deployment/controlmyspa-porssari --timeout=120s

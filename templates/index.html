@@ -4,21 +4,9 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Porssari controlmyspa</title>
-    <script src="https://durchblick.app/widget.js"></script>
-    <script>
-        DurchblickWidget.init({
-            apiKey: '365b7bef2865fdc1c1923897',
-            publicFeedback: false,
-            primaryColor: '#333',
-            secondaryColor: '#ccc',
-            dotSize: '20px',
-            dotColor: '#f00',
-            enterFeedbackModeText: 'Feedback Mode Off',
-            exitFeedbackModeText: 'Feedback Mode On',
-        });
-    </script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body {
@@ -99,6 +87,8 @@
         .btn:hover { opacity: 0.85; }
         .btn-enable { background: #e67e22; color: #fff; }
         .btn-disable { background: #27ae60; color: #fff; }
+        .btn-heat { background: #e74c3c; color: #fff; }
+        .btn-cold { background: #3498db; color: #fff; }
     </style>
 </head>
 <body>
@@ -127,11 +117,16 @@
     <h2>Manual Override</h2>
     <div class="override-section">
         {% if manual_override_endtime > now %}
-            <span class="override-status active">Active until {{ manual_override_endtime.strftime('%H:%M %d/%m') }}</span>
+            <span class="override-status active">Active until {{ manual_override_endtime.strftime('%d.%m.%Y %H:%M') }}</span>
             <button class="btn btn-disable" onclick="toggleOverride('disable')">Disable Override</button>
         {% else %}
             <span class="override-status">Inactive — Porssari controls the temperature</span>
-            <button class="btn btn-enable" onclick="toggleOverride('enable')">Enable 12h Override</button>
+            <button class="btn btn-heat" onclick="toggleOverride('heat')">Keep the pool heated to {{ temp_heat }}°C for 12h</button>
+            <button class="btn btn-cold" onclick="toggleOverride('cold')">Keep the pool at {{ temp_low }}°C for 24h</button>
+            <button class="btn btn-enable" onclick="toggleOverride('enable')">Disable Porssari control for 12h</button>
+        {% endif %}
+        {% if heat_estimate_minutes is not none %}
+            <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min ({{ heat_estimate_time.strftime('%d.%m.%Y %H:%M') }})</span>
         {% endif %}
     </div>
 </div>
@@ -210,6 +205,7 @@
                         x: {
                             type: 'time',
                             time: { tooltipFormat: 'HH:mm, MMM d' },
+                            adapters: { date: { zone: 'Europe/Helsinki' } },
                             title: { display: true, text: 'Time' }
                         },
                         y: {

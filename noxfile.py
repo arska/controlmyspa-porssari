@@ -16,10 +16,19 @@ def _project_deps() -> list[str]:
     return data["project"]["dependencies"]
 
 
+def _dev_dep(name: str) -> str:
+    """Read a pinned dev dependency spec from pyproject.toml."""
+    data = tomllib.loads(Path("pyproject.toml").read_text())
+    for dep in data["dependency-groups"]["dev"]:
+        if dep.startswith(name):
+            return dep
+    return name
+
+
 @nox.session
 def ruff(session: nox.Session) -> None:
     """Run ruff linter and formatter checks."""
-    session.install("ruff")
+    session.install(_dev_dep("ruff"))
     session.run("ruff", "check", ".")
     session.run("ruff", "format", "--check", ".")
 

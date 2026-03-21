@@ -35,6 +35,7 @@ Background jobs via APScheduler run every 15 minutes:
 - `GET /` — Web GUI with temp graph, pool status, override toggle, schedule grid
 - `GET /api/temperatures` — JSON: temperature history + future porssari schedule
 - `POST /api/override` — JSON body `{"action": "enable"|"disable"}` to toggle manual override
+- `POST /telegram/<token>` — Telegram bot webhook (commands: /status, /override, /heat, /schedule)
 
 ## Environment Variables
 
@@ -47,7 +48,16 @@ TEMP_LOW=27          # Temperature during expensive hours
 TEMP_OVERRIDE=0      # If non-zero, overrides all logic with this temp
 PORT=8080            # Web server port
 SENTRY_URL           # Optional Sentry DSN for error tracking
+TELEGRAM_BOT_TOKEN   # Optional Telegram bot token for stale temp alerts
+TELEGRAM_CHAT_ID     # Optional Telegram chat ID(s), comma-separated for multiple users
+TELEGRAM_WEBHOOK_URL # Optional base URL for Telegram webhook registration (e.g. https://poreallas.aukia.com)
 ```
+
+## Development Workflow
+
+- **Test-driven development**: Write tests first, then implement. Always run tests (`uvx nox` or `pytest test_app.py -v`) after every change.
+- **Always format before committing**: Run `ruff format .` after every code change. CI checks both `ruff check` AND `ruff format --check` — formatting violations fail the build.
+- **Always verify**: Run `uvx nox -s ruff pylint tests` before considering any change complete.
 
 ## Development Commands
 

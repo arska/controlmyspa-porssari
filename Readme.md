@@ -41,6 +41,32 @@ I use this feature to manually set the pool temperature to 36.5 (which, in my ca
 
 Pörssäri controls resume when the pool temperature is manually set to either TEMP_HIGH or TEMP_LOW, or automatically when the 8h timeout expires.
 
+## Deployment (OpenShift / GitOps)
+
+Kubernetes manifests are in `deploy/`. Secrets are encrypted with [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age).
+
+### Editing secrets
+
+```bash
+SOPS_AGE_KEY_FILE=.sops-age-key.txt sops deploy/secret.yaml
+```
+
+This opens the decrypted secret in your editor. Save and close to re-encrypt automatically.
+
+### Setting up on a new machine
+
+1. Get the age private key from a team member or your password manager
+2. Save it to `.sops-age-key.txt` in the repo root (gitignored)
+3. Verify decryption works: `SOPS_AGE_KEY_FILE=.sops-age-key.txt sops --decrypt deploy/secret.yaml`
+
+### CI/CD
+
+GitHub Actions automatically deploys to OpenShift on push to `main`. Required GitHub secrets:
+
+- `SOPS_AGE_KEY` — age private key for decrypting secrets
+- `OPENSHIFT_TOKEN` — OpenShift service account token
+- `OPENSHIFT_SERVER` — OpenShift API server URL
+
 ## References
 
 Based on https://github.com/Porssari/PicoW-client/tree/main/release

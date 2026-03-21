@@ -1,0 +1,7 @@
+creation_rules:
+  - path_regex: deploy/secret\.yaml$
+    encrypted_regex: ^(data|stringData)$
+    age: age1ff6tzagxcpskm2p2jnu2kulfg47cqh5g60hfc5w3hv6r32cy3fqqgcyjhc
+  - path_regex: deploy/ingress\.yaml$
+    encrypted_regex: ^(host|hosts|secretName)$
+    age: age1ff6tzagxcpskm2p2jnu2kulfg47cqh5g60hfc5w3hv6r32cy3fqqgcyjhc
