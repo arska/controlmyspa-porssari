@@ -604,8 +604,8 @@ class TestTelegram:
     def test_stale_alert_heating_mode(self, mock_tg):
         """Alert after 45min of identical readings when heating."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(3):
-            t = now - datetime.timedelta(minutes=44 - i * 15)
+        for i in range(4):
+            t = now - datetime.timedelta(minutes=46 - i * 15)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 37}
             )
@@ -622,8 +622,8 @@ class TestTelegram:
     def test_stale_alert_general_mode(self, mock_tg):
         """Alert after 6h of identical readings in general mode."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(25):
-            t = now - datetime.timedelta(minutes=359 - i * 14)
+        for i in range(26):
+            t = now - datetime.timedelta(minutes=361 - i * 14)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
@@ -682,8 +682,8 @@ class TestTelegram:
             tz=datetime.UTC
         ) - datetime.timedelta(hours=9)
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(25):
-            t = now - datetime.timedelta(minutes=359 - i * 14)
+        for i in range(26):
+            t = now - datetime.timedelta(minutes=361 - i * 14)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
@@ -705,7 +705,7 @@ class TestTelegram:
         app_module.STALE_ALERT_ACTIVE = True
         now = datetime.datetime.now(tz=datetime.UTC)
         for i in range(5):
-            t = now - datetime.timedelta(minutes=40 - i * 10)
+            t = now - datetime.timedelta(minutes=50 - i * 10)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0 + i, "desired_temp": 37}
             )
@@ -725,6 +725,49 @@ class TestTelegram:
         app_module.temperature_history.append(
             {"time": now.isoformat(), "current_temp": 30.0, "desired_temp": 37}
         )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_no_false_stale_alert_after_restart_idle(self, mock_tg):
+        """No stale alert when app just restarted with insufficient history.
+
+        Reproduces: app starts, collects 3 readings over ~45min in idle mode,
+        all temps similar. Should NOT alert "stuck for 6h" since we only have
+        45min of data.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(4):
+            t = now - datetime.timedelta(minutes=45 - i * 15)
+            app_module.temperature_history.append(
+                {"time": t.isoformat(), "current_temp": 36.0, "desired_temp": 10}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_no_false_stale_alert_after_restart_heating(self, mock_tg):
+        """No stale alert when app just restarted with insufficient history.
+
+        In heating mode, needs 45min of data. With only 2 readings over 20min,
+        should not alert.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(3):
+            t = now - datetime.timedelta(minutes=20 - i * 10)
+            app_module.temperature_history.append(
+                {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 37}
+            )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
         mock_tg.assert_not_called()
