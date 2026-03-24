@@ -102,6 +102,13 @@ def check_stale_temperature() -> None:
     if len(window) < 3:  # noqa: PLR2004
         return
 
+    # Require that our history actually covers the full stale window.
+    # After a restart we may only have a few minutes of data — don't
+    # claim "stuck for 6h" when we've only been running for 45 minutes.
+    oldest_in_history = datetime.datetime.fromisoformat(history[0]["time"])
+    if oldest_in_history > cutoff:
+        return
+
     temps = [r["current_temp"] for r in window]
     is_stale = (max(temps) - min(temps)) < 0.5  # noqa: PLR2004
 
