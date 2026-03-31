@@ -602,10 +602,10 @@ class TestTelegram:
     )
     @patch("app.send_telegram")
     def test_stale_alert_heating_mode(self, mock_tg):
-        """Alert after 45min of identical readings when heating."""
+        """Alert after 2h of identical readings when heating."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(4):
-            t = now - datetime.timedelta(minutes=46 - i * 15)
+        for i in range(9):
+            t = now - datetime.timedelta(minutes=121 - i * 15)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 37}
             )
@@ -704,10 +704,14 @@ class TestTelegram:
         ) - datetime.timedelta(hours=1)
         app_module.STALE_ALERT_ACTIVE = True
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(5):
-            t = now - datetime.timedelta(minutes=50 - i * 10)
+        for i in range(10):
+            t = now - datetime.timedelta(minutes=130 - i * 14)
             app_module.temperature_history.append(
-                {"time": t.isoformat(), "current_temp": 30.0 + i, "desired_temp": 37}
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 30.0 + i * 0.5,
+                    "desired_temp": 37,
+                }
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()
@@ -759,7 +763,7 @@ class TestTelegram:
     def test_no_false_stale_alert_after_restart_heating(self, mock_tg):
         """No stale alert when app just restarted with insufficient history.
 
-        In heating mode, needs 45min of data. With only 2 readings over 20min,
+        In heating mode, needs 2h of data. With only 3 readings over 20min,
         should not alert.
         """
         now = datetime.datetime.now(tz=datetime.UTC)
