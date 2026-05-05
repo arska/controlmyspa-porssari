@@ -467,6 +467,20 @@ class TestSetTemp:
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
+    def test_retries_on_keyerror(self, mock_api_class):
+        """set_temp retries on KeyError and logs RetryError gracefully."""
+        mock_api_class.side_effect = KeyError("currentState")
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        # All 5 attempts should have been made
+        assert mock_api_class.call_count == 5
+        # No temperature history recorded since all attempts failed
+        assert len(app_module.temperature_history) == 0
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
     def test_active_override_skips_temp_change(self, mock_api_class):
         """set_temp returns early when manual override endtime is in future."""
         mock_api = MagicMock()

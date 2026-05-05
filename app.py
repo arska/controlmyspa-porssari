@@ -347,7 +347,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
     try:
         for attempt in tenacity.Retrying(
             retry=tenacity.retry_if_exception_type(
-                requests.exceptions.RequestException
+                (requests.exceptions.RequestException, KeyError)
             ),
             wait=tenacity.wait_random_exponential(multiplier=1, max=60),
             stop=tenacity.stop_after_attempt(5),
@@ -446,7 +446,7 @@ def status() -> str:
         try:
             for attempt in tenacity.Retrying(
                 retry=tenacity.retry_if_exception_type(
-                    requests.exceptions.RequestException
+                    (requests.exceptions.RequestException, KeyError)
                 ),
                 wait=tenacity.wait_random_exponential(multiplier=1, max=60),
                 stop=tenacity.stop_after_attempt(5),
