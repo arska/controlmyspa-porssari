@@ -17,6 +17,7 @@ import requests
 import sentry_sdk
 import tenacity
 from apscheduler.schedulers.background import BackgroundScheduler
+from controlmyspa import SpaOfflineError
 from dotenv import load_dotenv
 from flask_caching import Cache
 from sentry_sdk.integrations.flask import FlaskIntegration
@@ -347,7 +348,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
     try:
         for attempt in tenacity.Retrying(
             retry=tenacity.retry_if_exception_type(
-                requests.exceptions.RequestException
+                (requests.exceptions.RequestException, KeyError, SpaOfflineError)
             ),
             wait=tenacity.wait_random_exponential(multiplier=1, max=60),
             stop=tenacity.stop_after_attempt(5),
@@ -446,7 +447,7 @@ def status() -> str:
         try:
             for attempt in tenacity.Retrying(
                 retry=tenacity.retry_if_exception_type(
-                    requests.exceptions.RequestException
+                    (requests.exceptions.RequestException, KeyError, SpaOfflineError)
                 ),
                 wait=tenacity.wait_random_exponential(multiplier=1, max=60),
                 stop=tenacity.stop_after_attempt(5),
