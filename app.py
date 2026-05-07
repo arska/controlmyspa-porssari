@@ -348,7 +348,12 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
     try:
         for attempt in tenacity.Retrying(
             retry=tenacity.retry_if_exception_type(
-                (requests.exceptions.RequestException, KeyError, SpaOfflineError)
+                (
+                    requests.exceptions.RequestException,
+                    KeyError,
+                    TypeError,
+                    SpaOfflineError,
+                )
             ),
             wait=tenacity.wait_random_exponential(multiplier=1, max=60),
             stop=tenacity.stop_after_attempt(5),
@@ -357,6 +362,13 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
             with attempt:
                 api = controlmyspa.ControlMySpa(
                     os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
+                )
+                info = getattr(api, "_info", None)  # pylint: disable=protected-access
+                sentry_sdk.set_context(
+                    "controlmyspa_info",
+                    {"info_keys": list(info.keys())}
+                    if isinstance(info, dict)
+                    else {"info": repr(info)},
                 )
                 pool = {
                     "desired_temp": api.desired_temp,
@@ -447,7 +459,12 @@ def status() -> str:
         try:
             for attempt in tenacity.Retrying(
                 retry=tenacity.retry_if_exception_type(
-                    (requests.exceptions.RequestException, KeyError, SpaOfflineError)
+                    (
+                        requests.exceptions.RequestException,
+                        KeyError,
+                        TypeError,
+                        SpaOfflineError,
+                    )
                 ),
                 wait=tenacity.wait_random_exponential(multiplier=1, max=60),
                 stop=tenacity.stop_after_attempt(5),
