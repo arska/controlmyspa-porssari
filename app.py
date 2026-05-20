@@ -263,7 +263,7 @@ def update_porssari() -> None:
                 | tenacity.retry_if_exception_type(json.JSONDecodeError)
             ),
             wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-            stop=tenacity.stop_after_attempt(5),
+            stop=tenacity.stop_after_delay(600),
             before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
         ):
             with attempt:
@@ -356,7 +356,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                 )
             ),
             wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-            stop=tenacity.stop_after_attempt(5),
+            stop=tenacity.stop_after_delay(600),
             before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
         ):
             with attempt:
@@ -467,7 +467,7 @@ def status() -> str:
                     )
                 ),
                 wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-                stop=tenacity.stop_after_attempt(5),
+                stop=tenacity.stop_after_delay(600),
                 before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
             ):
                 with attempt:

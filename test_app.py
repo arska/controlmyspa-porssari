@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -470,12 +471,24 @@ class TestSetTemp:
     def test_retries_on_keyerror(self, mock_api_class):
         """set_temp retries on KeyError and logs RetryError gracefully."""
         mock_api_class.side_effect = KeyError("currentState")
+        real_monotonic = time.monotonic
+        fake_offset = [0.0]
 
-        with app_module.APP.app_context():
+        def advancing_monotonic():
+            return real_monotonic() + fake_offset[0]
+
+        def advancing_sleep(seconds):
+            fake_offset[0] += seconds
+
+        with (
+            patch("time.monotonic", side_effect=advancing_monotonic),
+            patch("tenacity.nap.time.sleep", side_effect=advancing_sleep),
+            app_module.APP.app_context(),
+        ):
             app_module.set_temp(37)
 
-        # All 5 attempts should have been made
-        assert mock_api_class.call_count == 5
+        # Should have retried multiple times before giving up
+        assert mock_api_class.call_count > 1
         # No temperature history recorded since all attempts failed
         assert len(app_module.temperature_history) == 0
 
