@@ -1,4 +1,6 @@
-# CLAUDE.md — controlmyspa-porssari
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What This Project Does
 
@@ -15,20 +17,6 @@ Single-file Flask app (`app.py`) with no persistent storage. All state is in-mem
 Background jobs via APScheduler run every 15 minutes:
 - `update_porssari()` — fetches hourly on/off schedule from Pörssäri API
 - `control()` — sets spa temperature via ControlMySpa API based on current hour's command
-
-## Key Files
-
-| File | Purpose |
-|------|---------|
-| `app.py` | Main application — Flask routes, control logic, scheduled jobs |
-| `templates/index.html` | Jinja2 template — Chart.js temp graph, override toggle, schedule grid |
-| `test_app.py` | Pytest test suite (23 tests) |
-| `noxfile.py` | Nox sessions: ruff, pylint, tests, docker |
-| `pyproject.toml` | Project config, dependencies, ruff/pylint settings |
-| `Dockerfile` | Python 3.14-alpine, uv for dependency management |
-| `get_certificate.py` | SSL cert setup for iot.controlmyspa.com (used in Docker build) |
-| `.github/workflows/docker-image.yml` | GitHub Actions CI |
-| `.gitlab-ci.yml` | GitLab CI pipeline |
 
 ## Routes
 
@@ -55,8 +43,8 @@ TELEGRAM_WEBHOOK_URL # Optional base URL for Telegram webhook registration (e.g.
 
 ## Development Workflow
 
-- **Test-driven development**: Write tests first, then implement. Always run tests (`uvx nox` or `pytest test_app.py -v`) after every change.
-- **Always format before committing**: Run `ruff format .` after every code change. CI checks both `ruff check` AND `ruff format --check` — formatting violations fail the build.
+- **Test-driven development**: Write tests first, then implement. Always run tests after every change.
+- **Always format before committing**: CI checks both `ruff check` AND `ruff format --check` — formatting violations fail the build.
 - **Always verify**: Run `uvx nox -s ruff pylint tests` before considering any change complete.
 
 ## Development Commands
@@ -73,39 +61,25 @@ uvx nox -s ruff
 uvx nox -s tests
 uvx nox -s pylint
 
-# Run tests directly
-pytest test_app.py -v
+# Run a single test
+pytest test_app.py -v -k "test_name"
+
+# Run tests with coverage
 pytest --cov=app --cov-report=term
 
-# Lint and format
-ruff check .
-ruff format --check .
+# Format code
+ruff format .
 ```
 
 ## Code Style
 
-- **Linter**: ruff with `select = ["ALL"]` (very strict). Key ignores: D203, D213, COM812, ISC001.
-- **Test file ignores**: S101 (assert), ANN (annotations), PLR2004 (magic values), PT022, ARG002.
-- **Formatter**: ruff format (Black-compatible), 88 char line length, double quotes.
-- **Pylint**: Disables `pointless-string-statement`, `global-statement`.
-- **Target**: Python 3.14.
+- ruff with `select = ["ALL"]` — very strict. See `pyproject.toml` for ignores.
+- ruff format (Black-compatible), 88 char line length, double quotes.
+- Target: Python 3.14.
 
 ## Testing
 
-23 tests in `test_app.py` covering:
-- Status page rendering (with/without cache, with porssari config)
-- `/api/temperatures` endpoint (empty history, data, bounds, future schedule, maxlen)
-- `/api/override` endpoint (enable, disable, invalid action, no body)
-- `control()` logic (no config, command 0/1, TEMP_OVERRIDE)
-- `set_temp()` (history recording, caching, temp changes, manual override detection)
-- `update_porssari()` (config parsing, whitespace handling)
-
-Tests mock `controlmyspa.ControlMySpa` and `requests.get` to avoid external API calls. Global state is reset between tests via autouse fixture.
-
-## CI/CD
-
-- **GitHub Actions** (`.github/workflows/docker-image.yml`): runs `uvx nox` then builds/pushes Docker image to GHCR
-- **GitLab CI** (`.gitlab-ci.yml`): `lint-and-test` stage (uv + nox), `docker` stage (build + smoke test)
+Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to avoid external API calls. Global state is reset between tests via an autouse fixture.
 
 ## External APIs
 
