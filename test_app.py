@@ -647,10 +647,10 @@ class TestTelegram:
     )
     @patch("app.send_telegram")
     def test_stale_alert_general_mode(self, mock_tg):
-        """Alert after 6h of identical readings in general mode."""
+        """Alert after 8h of identical readings in general mode."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(26):
-            t = now - datetime.timedelta(minutes=361 - i * 14)
+        for i in range(36):
+            t = now - datetime.timedelta(minutes=481 - i * 14)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
@@ -666,8 +666,8 @@ class TestTelegram:
     def test_no_alert_when_temp_changing(self, mock_tg):
         """No alert when temperatures are changing."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(25):
-            t = now - datetime.timedelta(minutes=359 - i * 14)
+        for i in range(35):
+            t = now - datetime.timedelta(minutes=479 - i * 14)
             app_module.temperature_history.append(
                 {
                     "time": t.isoformat(),
@@ -688,8 +688,8 @@ class TestTelegram:
         """Alert suppressed for 8h after first alert."""
         app_module.last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(25):
-            t = now - datetime.timedelta(minutes=359 - i * 14)
+        for i in range(35):
+            t = now - datetime.timedelta(minutes=479 - i * 14)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
@@ -709,8 +709,8 @@ class TestTelegram:
             tz=datetime.UTC
         ) - datetime.timedelta(hours=9)
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(26):
-            t = now - datetime.timedelta(minutes=361 - i * 14)
+        for i in range(36):
+            t = now - datetime.timedelta(minutes=481 - i * 14)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
