@@ -629,10 +629,10 @@ class TestTelegram:
     )
     @patch("app.send_telegram")
     def test_stale_alert_heating_mode(self, mock_tg):
-        """Alert after 2h of identical readings when heating."""
+        """Alert after 3h of identical readings when heating."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(9):
-            t = now - datetime.timedelta(minutes=121 - i * 15)
+        for i in range(13):
+            t = now - datetime.timedelta(minutes=181 - i * 15)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 37}
             )
@@ -732,7 +732,7 @@ class TestTelegram:
         app_module.STALE_ALERT_ACTIVE = True
         now = datetime.datetime.now(tz=datetime.UTC)
         for i in range(10):
-            t = now - datetime.timedelta(minutes=130 - i * 14)
+            t = now - datetime.timedelta(minutes=190 - i * 20)
             app_module.temperature_history.append(
                 {
                     "time": t.isoformat(),
@@ -790,7 +790,7 @@ class TestTelegram:
     def test_no_false_stale_alert_after_restart_heating(self, mock_tg):
         """No stale alert when app just restarted with insufficient history.
 
-        In heating mode, needs 2h of data. With only 3 readings over 20min,
+        In heating mode, needs 3h of data. With only 3 readings over 20min,
         should not alert.
         """
         now = datetime.datetime.now(tz=datetime.UTC)
