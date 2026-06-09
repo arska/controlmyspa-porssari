@@ -647,10 +647,10 @@ class TestTelegram:
     )
     @patch("app.send_telegram")
     def test_stale_alert_general_mode(self, mock_tg):
-        """Alert after 8h of identical readings in general mode."""
+        """Alert after 12h of identical readings in general mode."""
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(36):
-            t = now - datetime.timedelta(minutes=481 - i * 14)
+        for i in range(37):
+            t = now - datetime.timedelta(minutes=721 - i * 20)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
@@ -709,8 +709,8 @@ class TestTelegram:
             tz=datetime.UTC
         ) - datetime.timedelta(hours=9)
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(36):
-            t = now - datetime.timedelta(minutes=481 - i * 14)
+        for i in range(37):
+            t = now - datetime.timedelta(minutes=721 - i * 20)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
