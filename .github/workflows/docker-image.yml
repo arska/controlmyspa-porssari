@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Install sops
-        uses: nhedger/setup-sops@v2
+        uses: nhedger/setup-sops@v3
       - name: Install age
         uses: alessiodionisi/setup-age-action@v1.4.0
       - name: Install oc CLI
