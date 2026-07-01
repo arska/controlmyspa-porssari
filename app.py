@@ -91,7 +91,7 @@ def check_stale_temperature() -> None:
     # Determine if we're in heating mode
     latest = history[-1]
     heating = latest["desired_temp"] >= temp_high > latest["current_temp"]
-    stale_minutes = 120 if heating else 480  # 2h heating, 8h idle
+    stale_minutes = 180 if heating else 720  # 3h heating, 12h idle
 
     # Find readings within the stale window using actual timestamps
     now = datetime.datetime.now(tz=datetime.UTC)
