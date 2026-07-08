@@ -12,7 +12,7 @@ jobs:
     name: "run nox"
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v8.3.1
+      - uses: astral-sh/setup-uv@v8.3.2
       - name: Lint and test with nox
         run: uvx nox -s ruff pylint tests
 
