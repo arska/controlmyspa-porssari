@@ -48,6 +48,7 @@
         }
         .stat .value.red { color: #e74c3c; }
         .stat .value.blue { color: #3498db; }
+        .stat .value.gray { color: #7f8c8d; }
         .hours-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(3rem, 1fr));
@@ -105,6 +106,10 @@
             <div class="value blue">{{ api.desired_temp if api else '?' }}°C</div>
             <div class="label">Set</div>
         </div>
+        <div class="stat">
+            <div class="value gray">{{ outside_temp if outside_temp is not none else '?' }}°C</div>
+            <div class="label">Outside</div>
+        </div>
     </div>
 </div>
 
@@ -159,7 +164,8 @@
             const history = data.history.map(p => ({
                 time: new Date(p.time),
                 current: p.current_temp,
-                desired: p.desired_temp
+                desired: p.desired_temp,
+                outside: p.outside_temp
             }));
             const future = data.future.map(p => ({
                 time: new Date(p.time),
@@ -185,6 +191,16 @@
                             tension: 0,
                             pointRadius: 2,
                             stepped: true,
+                            fill: false
+                        },
+                        {
+                            label: 'Outside temp',
+                            data: history
+                                .filter(p => p.outside != null)
+                                .map(p => ({x: p.time, y: p.outside})),
+                            borderColor: '#7f8c8d',
+                            tension: 0.3,
+                            pointRadius: 2,
                             fill: false
                         },
                         {

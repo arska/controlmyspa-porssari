@@ -24,6 +24,7 @@ def _reset_state():
         0, tz=datetime.UTC
     )
     app_module.STALE_ALERT_ACTIVE = False
+    app_module.latest_outside_temp = None
     yield
 
 
@@ -130,6 +131,13 @@ class TestTemperatureAPI:
         data = resp.get_json()
         assert data["temp_high"] == 37
         assert data["temp_low"] == 27
+
+    def test_returns_outside_temp(self, client):
+        """Returns the latest outside temperature."""
+        app_module.latest_outside_temp = 7.5
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert data["outside_temp"] == 7.5
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     def test_returns_future_schedule(self, client, sample_porssari_config):
@@ -437,6 +445,19 @@ class TestSetTemp:
         # (it stays 37 from the mock)
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_records_outside_temp_in_history(self, mock_api_class):
+        """set_temp records the latest outside temp with each reading."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+        app_module.latest_outside_temp = -3.2
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+        assert app_module.temperature_history[-1]["outside_temp"] == -3.2
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.check_stale_temperature")
     @patch("app.controlmyspa.ControlMySpa")
     def test_calls_check_stale_temperature(self, mock_api_class, mock_check):
@@ -548,6 +569,43 @@ class TestUpdatePorssari:
             app_module.update_porssari()
 
         assert app_module.porssari_config == config
+
+
+# --- update_weather tests ---
+
+
+class TestUpdateWeather:
+    """Tests for the update_weather() function."""
+
+    @patch("app.requests.get")
+    def test_fetches_outside_temp(self, mock_get):
+        """Successfully parses Open-Meteo response and stores outside temp."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"current": {"temperature_2m": 12.3}}
+        mock_get.return_value = mock_response
+
+        with app_module.APP.app_context():
+            app_module.update_weather()
+
+        assert app_module.latest_outside_temp == 12.3
+
+    @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
+    def test_keeps_last_value_on_error(self, mock_get):
+        """Leaves the previous value untouched when the API is unreachable."""
+        app_module.latest_outside_temp = 5.0
+        with app_module.APP.app_context():
+            app_module.update_weather()
+        assert app_module.latest_outside_temp == 5.0
+
+    @patch("app.requests.get")
+    def test_handles_malformed_response(self, mock_get):
+        """Does not crash when the response is missing expected keys."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"unexpected": "shape"}
+        mock_get.return_value = mock_response
+        with app_module.APP.app_context():
+            app_module.update_weather()
+        assert app_module.latest_outside_temp is None
 
 
 # --- Telegram tests ---

@@ -27,11 +27,24 @@ APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
 scheduler = BackgroundScheduler()
 PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
+# Free, keyless weather API. Defaults below point at 20900 Turku, Finland.
+OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
+DEFAULT_WEATHER_LAT = "60.45"
+DEFAULT_WEATHER_LON = "22.27"
+# A weather fetch may fail on the network (RequestException) or while parsing
+# the JSON (KeyError for a missing field, ValueError for bad/no JSON). Kept as a
+# named tuple because ruff 0.15.21's formatter mangles inline `except (...)`.
+WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 # Average heating rate in °C per hour, measured empirically
 HEATING_RATE_PER_HOUR = 1.5
 porssari_config = {}
 # 48h of data at 15min intervals = 192 data points
 temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
+
+# Latest outside air temperature in °C (or None), refreshed hourly by
+# update_weather(). Recorded alongside spa temps to later model
+# temperature-dependent cooling. Mutable global, not a constant.
+latest_outside_temp = None  # pylint: disable=invalid-name
 
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
@@ -229,6 +242,16 @@ def initialize() -> None:
         max_instances=1,
         next_run_time=datetime.datetime.now(tz=datetime.UTC),
     )
+    scheduler.add_job(
+        update_weather,
+        "interval",
+        minutes=60,
+        id="update_weather",
+        misfire_grace_time=None,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.datetime.now(tz=datetime.UTC),
+    )
     send_telegram("\U0001f6c1 controlmyspa-porssari started")
 
     # Register Telegram webhook if URL is configured
@@ -312,6 +335,36 @@ def update_porssari() -> None:
                         )
 
 
+def update_weather() -> None:
+    """Fetch the current outside air temperature and cache it in memory.
+
+    Uses the free, keyless Open-Meteo API for the configured location
+    (WEATHER_LAT/WEATHER_LON, defaulting to 20900 Turku, Finland). On any
+    failure the previous value is kept so a transient outage doesn't wipe
+    the reading recorded with the next spa temperature sample.
+    """
+    global latest_outside_temp  # noqa: PLW0603
+    with (
+        sentry_sdk.start_transaction(op="task", name="Update Weather"),
+        APP.app_context(),
+    ):
+        try:
+            response = requests.get(
+                OPEN_METEO_API,
+                {
+                    "latitude": os.getenv("WEATHER_LAT", DEFAULT_WEATHER_LAT),
+                    "longitude": os.getenv("WEATHER_LON", DEFAULT_WEATHER_LON),
+                    "current": "temperature_2m",
+                },
+                timeout=10,
+            )
+            response.raise_for_status()
+            latest_outside_temp = response.json()["current"]["temperature_2m"]
+            APP.logger.info("got outside temperature: %s°C", latest_outside_temp)
+        except WEATHER_FETCH_ERRORS:
+            APP.logger.exception("failed to fetch outside temperature")
+
+
 def control(*, skip_override_detection: bool = False) -> None:
     """Set the pool temperature according to porssari instructions."""
     with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
@@ -380,6 +433,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                         "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
                         "current_temp": pool["current_temp"],
                         "desired_temp": pool["desired_temp"],
+                        "outside_temp": latest_outside_temp,
                     }
                 )
 
@@ -506,6 +560,7 @@ def status() -> str:
         heat_estimate_time=heat_estimate_time,
         temp_high=temp_high,
         temp_low=int(os.getenv("TEMP_LOW", "0")),
+        outside_temp=latest_outside_temp,
     )
 
 
@@ -598,6 +653,7 @@ def api_temperatures() -> flask.Response:
             "future": future,
             "temp_high": temp_high,
             "temp_low": temp_low,
+            "outside_temp": latest_outside_temp,
         }
     )
 
