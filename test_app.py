@@ -684,12 +684,12 @@ class TestTelegram:
         {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
     )
     @patch("app.send_telegram")
-    def test_stale_alert_suppressed_8h(self, mock_tg):
-        """Alert suppressed for 8h after first alert."""
+    def test_stale_alert_suppressed_within_window(self, mock_tg):
+        """Alert suppressed within the stale window (12h idle) after first alert."""
         app_module.last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
         now = datetime.datetime.now(tz=datetime.UTC)
-        for i in range(35):
-            t = now - datetime.timedelta(minutes=479 - i * 14)
+        for i in range(37):
+            t = now - datetime.timedelta(minutes=721 - i * 20)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
             )
@@ -702,17 +702,40 @@ class TestTelegram:
         {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
     )
     @patch("app.send_telegram")
-    def test_stale_alert_repeats_after_8h(self, mock_tg):
-        """Alert repeats every 8h while temperature stays stale."""
+    def test_stale_alert_repeats_after_window(self, mock_tg):
+        """Alert repeats once per stale window (12h idle) while stale."""
         app_module.STALE_ALERT_ACTIVE = True
         app_module.last_stale_alert_time = datetime.datetime.now(
             tz=datetime.UTC
-        ) - datetime.timedelta(hours=9)
+        ) - datetime.timedelta(hours=13)
         now = datetime.datetime.now(tz=datetime.UTC)
         for i in range(37):
             t = now - datetime.timedelta(minutes=721 - i * 20)
             app_module.temperature_history.append(
                 {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 10}
+            )
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+        mock_tg.assert_called_once()
+        assert "stuck" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_stale_alert_heating_repeats_after_3h(self, mock_tg):
+        """Heating re-alert interval tracks its 3h window, not the idle one."""
+        app_module.STALE_ALERT_ACTIVE = True
+        # 4h ago: past the 3h heating window, but within the old fixed 8h.
+        app_module.last_stale_alert_time = datetime.datetime.now(
+            tz=datetime.UTC
+        ) - datetime.timedelta(hours=4)
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(13):
+            t = now - datetime.timedelta(minutes=181 - i * 15)
+            app_module.temperature_history.append(
+                {"time": t.isoformat(), "current_temp": 30.0, "desired_temp": 37}
             )
         with app_module.APP.app_context():
             app_module.check_stale_temperature()

@@ -114,8 +114,8 @@ def check_stale_temperature() -> None:
     is_stale = (max(temps) - min(temps)) < 0.5  # noqa: PLR2004
 
     if is_stale:
-        # Send alert every 8h while stale (initial + repeats)
-        if (now - last_stale_alert_time).total_seconds() < 8 * 3600:
+        # Repeat the alert once per stale window (3h heating, 12h idle)
+        if (now - last_stale_alert_time).total_seconds() < stale_minutes * 60:
             STALE_ALERT_ACTIVE = True
             return
         mode = "heating" if heating else "idle"
