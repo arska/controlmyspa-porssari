@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: teslamate-postgres
+  labels:
+    app: teslamate-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: teslamate-postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: teslamate-postgres
+    spec:
+      containers:
+        - name: postgresql
+          # sclorg image: runs under OpenShift's arbitrary UIDs and ships the
+          # contrib extensions (cube, earthdistance) TeslaMate requires
+          image: quay.io/sclorg/postgresql-16-c9s:latest
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POSTGRESQL_USER
+              value: teslamate
+            - name: POSTGRESQL_DATABASE
+              value: teslamate
+            - name: POSTGRESQL_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: teslamate
+                  key: DATABASE_PASS
+          ports:
+            - containerPort: 5432
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            limits:
+              memory: 512Mi
+          livenessProbe:
+            tcpSocket:
+              port: 5432
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            exec:
+              command:
+                - /usr/libexec/check-container
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: teslamate-postgres-data

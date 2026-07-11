@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tesla-wellknown
+  labels:
+    app: tesla-wellknown
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tesla-wellknown
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: tesla-wellknown
+    spec:
+      containers:
+        - name: nginx
+          image: nginxinc/nginx-unprivileged:stable-alpine
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+          volumeMounts:
+            - name: pubkey
+              mountPath: /usr/share/nginx/html/.well-known/appspecific
+              readOnly: true
+          resources:
+            limits:
+              memory: 64Mi
+          livenessProbe:
+            httpGet:
+              path: /.well-known/appspecific/com.tesla.3p.public-key.pem
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /.well-known/appspecific/com.tesla.3p.public-key.pem
+              port: 8080
+            initialDelaySeconds: 2
+            periodSeconds: 10
+      volumes:
+        - name: pubkey
+          configMap:
+            name: tesla-wellknown

@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tesla-http-proxy
+  labels:
+    app: tesla-http-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tesla-http-proxy
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: tesla-http-proxy
+    spec:
+      containers:
+        - name: tesla-http-proxy
+          # build from ../proxy/Dockerfile and push somewhere pullable
+          image: <REGISTRY>/tesla-http-proxy:v0.4.1
+          imagePullPolicy: Always
+          args:
+            - -cert
+            - /tls/tls.crt
+            - -tls-key
+            - /tls/tls.key
+            - -key-file
+            - /keys/fleet-private-key.pem
+            - -host
+            - 0.0.0.0
+            - -port
+            - "4443"
+          ports:
+            - containerPort: 4443
+              protocol: TCP
+          volumeMounts:
+            - name: tls
+              mountPath: /tls
+              readOnly: true
+            - name: fleet-key
+              mountPath: /keys
+              readOnly: true
+          resources:
+            limits:
+              memory: 128Mi
+          livenessProbe:
+            tcpSocket:
+              port: 4443
+            initialDelaySeconds: 3
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 4443
+            initialDelaySeconds: 2
+            periodSeconds: 10
+      volumes:
+        # cert issued by the OpenShift service CA via the Service annotation
+        - name: tls
+          secret:
+            secretName: tesla-http-proxy-tls
+        # sops-encrypted secret, see proxy-secret.example.yaml
+        - name: fleet-key
+          secret:
+            secretName: tesla-fleet-key

@@ -1,0 +1,60 @@
+# Optional: TeslaMate's bundled Grafana dashboards (SOC/charging history).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: teslamate-grafana
+  labels:
+    app: teslamate-grafana
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: teslamate-grafana
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: teslamate-grafana
+    spec:
+      containers:
+        - name: grafana
+          image: teslamate/grafana:latest
+          imagePullPolicy: Always
+          env:
+            - name: DATABASE_USER
+              value: teslamate
+            - name: DATABASE_NAME
+              value: teslamate
+            - name: DATABASE_HOST
+              value: teslamate-postgres
+            - name: DATABASE_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: teslamate
+                  key: DATABASE_PASS
+          ports:
+            - containerPort: 3000
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/grafana
+          resources:
+            limits:
+              memory: 256Mi
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: teslamate-grafana-data

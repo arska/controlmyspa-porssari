@@ -1,0 +1,15 @@
+# Access via: oc port-forward svc/teslamate-grafana 3000:3000
+# (Grafana has its own login; expose via Ingress later if wanted.)
+apiVersion: v1
+kind: Service
+metadata:
+  name: teslamate-grafana
+  labels:
+    app: teslamate-grafana
+spec:
+  ports:
+    - port: 3000
+      protocol: TCP
+      targetPort: 3000
+  selector:
+    app: teslamate-grafana

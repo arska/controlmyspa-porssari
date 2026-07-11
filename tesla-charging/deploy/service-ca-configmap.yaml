@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tesla-service-ca
+  labels:
+    app: evcc
+  annotations:
+    # OpenShift injects the cluster service CA bundle as key service-ca.crt;
+    # evcc trusts it via SSL_CERT_DIR to reach the tesla-http-proxy over TLS.
+    service.beta.openshift.io/inject-cabundle: "true"
+data: {}

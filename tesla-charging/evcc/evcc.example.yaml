@@ -1,0 +1,63 @@
+# evcc configuration template — the REAL copy of this file lives inside the
+# sops-encrypted deploy/evcc-secret.yaml (key `evcc.yaml`). Keep the two in
+# sync; this placeholder copy exists for review and diffing only.
+#
+# Validate after changes (inside the evcc pod or locally):
+#   evcc --config evcc.yaml tariff    # prints Nordpool FI 15-min prices
+#   evcc --config evcc.yaml vehicle   # tests Fleet API auth (read-only)
+
+network:
+  schema: https
+  host: tesla.example.com # real hostname is a secret (see deploy/ingress.yaml)
+  port: 7070
+
+interval: 60s
+
+tariffs:
+  currency: EUR
+  grid:
+    type: template
+    template: nordpool
+    region: FI
+    currency: EUR
+    # charges: 0.05 # optional: grid transfer fee, EUR/kWh
+    # tax: 0.255    # optional: VAT
+
+vehicles:
+  - name: tesla
+    type: template
+    template: tesla
+    title: Tesla
+    capacity: 75 # usable battery kWh — set your model's real value
+    clientId: <TESLA_CLIENT_ID>
+    accessToken: <TESLA_ACCESS_TOKEN>
+    refreshToken: <TESLA_REFRESH_TOKEN>
+    vin: <VIN>
+    # self-hosted signing proxy (in-cluster service, OpenShift serving cert):
+    commandProxy: https://tesla-http-proxy.<NAMESPACE>.svc:4443
+    # no proxyToken: only needed for the commercial myteslamate.com proxy
+    cache: 15m # do NOT lower: Fleet API polling is metered (see docs/costs.md)
+
+chargers:
+  # Tesla Wall Connector Gen 1 is not controllable — this virtual charger
+  # starts/stops charging car-side via the vehicle API.
+  - name: twc1
+    type: template
+    template: vehicle-api
+    geofence_enabled: true # mandatory: without it evcc also controls charging
+    lat: <HOME_LAT>        # at public chargers (evcc issue #28984)
+    lon: <HOME_LON>
+    radius: 100 # meters
+
+loadpoints:
+  - title: Home TWC
+    charger: twc1
+    vehicle: tesla
+    # pv mode with no solar meter configured = charge ONLY when a charging
+    # plan (target SOC + departure time) selects a slot, or on manual "now".
+    mode: pv
+    phases: 3
+    maxCurrent: 16 # A → 11 kW at 3×230 V
+
+site:
+  title: Home

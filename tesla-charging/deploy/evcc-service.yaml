@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: evcc
+  labels:
+    app: evcc
+spec:
+  ports:
+    - port: 7070
+      protocol: TCP
+      targetPort: 7070
+  selector:
+    app: evcc

@@ -1,0 +1,36 @@
+# Copy to ingress.yaml, set the real hostname (3 places), then:
+#   sops --encrypt --in-place tesla-charging/deploy/ingress.yaml
+# (host/hosts/secretName fields are encrypted, matching the spa app's pattern)
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tesla-charging
+  labels:
+    app: evcc
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-production
+spec:
+  rules:
+    - host: tesla.example.com
+      http:
+        paths:
+          # Tesla fetches the Fleet API public key here (must be public)
+          - path: /.well-known/appspecific
+            pathType: Prefix
+            backend:
+              service:
+                name: tesla-wellknown
+                port:
+                  number: 8080
+          # evcc web UI (protected by evcc's admin password)
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: evcc
+                port:
+                  number: 7070
+  tls:
+    - hosts:
+        - tesla.example.com
+      secretName: tesla-charging-tls

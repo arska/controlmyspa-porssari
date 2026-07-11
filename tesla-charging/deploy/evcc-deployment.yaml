@@ -1,0 +1,75 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: evcc
+  labels:
+    app: evcc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: evcc
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: evcc
+    spec:
+      containers:
+        - name: evcc
+          image: evcc/evcc:0.311.1
+          imagePullPolicy: IfNotPresent
+          args:
+            - --config
+            - /etc/evcc/evcc.yaml
+          env:
+            # sqlite on the PVC: persists rotated Tesla refresh tokens,
+            # charging plans, sessions — this volume is load-bearing
+            - name: EVCC_DATABASE_DSN
+              value: /data/evcc.db
+            - name: HOME
+              value: /data
+            - name: TZ
+              value: Europe/Helsinki
+            # trust the OpenShift service CA for the tesla-http-proxy TLS cert
+            - name: SSL_CERT_DIR
+              value: /etc/ssl/certs:/service-ca
+          ports:
+            - containerPort: 7070
+              protocol: TCP
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /etc/evcc
+              readOnly: true
+            - name: service-ca
+              mountPath: /service-ca
+              readOnly: true
+          resources:
+            limits:
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 7070
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 7070
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: evcc-data
+        # sops-encrypted secret, see evcc-secret.example.yaml
+        - name: config
+          secret:
+            secretName: evcc-config
+        - name: service-ca
+          configMap:
+            name: tesla-service-ca
