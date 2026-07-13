@@ -1,49 +1,85 @@
 # Controlmyspa Pörssäri.fi
 
-This project uses https://porssari.fi for time- and price-based temperature control of [Balboa ControlMySpa](https://github.com/arska/controlmyspa) based Whirlpools. This enables the use of market price electricity ("Pörssisähkö"), allowing the spa to be heated when electricity is cheap. In my case, I heat my pool during the cheapest three hours of the day to 37 °C.
+Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](https://github.com/arska/controlmyspa) hot tubs. Integrates with [Pörssäri.fi](https://porssari.fi) to heat the spa during the cheapest hours ("Pörssisähkö") and lower the temperature during expensive hours.
+
+## Features
+
+- **Price-based heating** — heats to `TEMP_HIGH` during cheap Nordpool hours, cools to `TEMP_LOW` during expensive hours
+- **Web GUI** — temperature graph, pool status, Pörssäri schedule grid, manual override controls
+- **Telegram bot** — remote status checks, override toggle, heat/cold commands
+- **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), recorded alongside spa temps for future cooling-rate analysis
+- **Persistent history** — temperature readings stored in SQLite, surviving restarts
+- **Stale temperature alerts** — Telegram notifications when spa readings stop changing (gateway may be offline)
 
 ## Usage
 
-Clone this git repo or pull the Docker image:
+Clone this repo or pull the Docker image:
 
+```bash
 docker run -p 8080:8080 ghcr.io/arska/controlmyspa-porssari
+```
+
+The web GUI is available at http://127.0.0.1:8080/.
 
 ## Configuration
 
-Configure using environment variables. For local development, you can put them into a ".env" file:
+Configure using environment variables. For local development, put them in a `.env` file.
 
-TEMP_LOW=27 # temperature to set during "expensive" hours, when Porssari says "off"
+### Required
 
-TEMP_HIGH=37 # temperature to set during "cheap" hours, when Porssari says "on"
+| Variable | Description |
+|----------|-------------|
+| `CONTROLMYSPA_USER` | Balboa account email |
+| `CONTROLMYSPA_PASS` | Balboa account password |
+| `PORSSARI_MAC` | MAC address registered on porssari.fi (must be unique on the platform) |
+| `TEMP_HIGH` | Temperature (°C) during cheap hours (e.g. `37`) |
+| `TEMP_LOW` | Temperature (°C) during expensive hours (e.g. `27`) |
 
-TEMP_OVERRIDE=0 # override the temperature logic, for example, during vacation
+### Optional
 
-CONTROLMYSPA_USER=user@example.com # your username to log in to https://controlmyspa.com
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEMP_OVERRIDE` | `0` | If non-zero, overrides all price logic with this temperature |
+| `WEATHER_LAT` | `60.45` | Latitude for weather lookup (default: Turku) |
+| `WEATHER_LON` | `22.27` | Longitude for weather lookup (default: Turku) |
+| `SQLITE_PATH` | `/data/temperatures.db` | Path to SQLite DB for persistent temp history. SQLite is disabled if the parent directory doesn't exist, so local dev works without creating `/data/` |
+| `PORT` | `8080` | Web server port |
+| `SENTRY_URL` | | Sentry DSN for error tracking |
+| `TELEGRAM_BOT_TOKEN` | | Telegram bot token for notifications and commands |
+| `TELEGRAM_CHAT_ID` | | Telegram chat ID(s), comma-separated for multiple users |
+| `TELEGRAM_WEBHOOK_URL` | | Base URL for Telegram webhook (e.g. `https://poreallas.aukia.com`) |
 
-CONTROLMYSPA_PASS=SuperSecretPassword # your password to log in to https://controlmyspa.com
+### Pörssäri.fi setup
 
-PORSSARI_MAC=A1B2C3D4E5F6 # MAC address as registered on porssari.fi, for example, the MAC address of your controlmyspa gateway or laptop (needs to be unique on the porssari.fi platform)
-
-
-On porssari.fi, create a new device of type "PICO W" with the MAC address defined above. The script currently only supports one control channel.
-
-You can then configure the "number of cheapest hours per day" to heat your pool to TEMP_HIGH, then let the pool cool down no lower than TEMP_LOW.
-
-The script provides a web server, by default at http://127.0.0.1:8080/, showing the pool's current and set temperatures, as well as the pool's control instructions.
-
-Please note that if your pool set temperature is not set to TEMP_HIGH or TEMP_LOW when starting the script, the porssari control will start 12 hours delayed due to Manual Override detection (see below).
+On porssari.fi, create a new device of type "PICO W" with the MAC address defined in `PORSSARI_MAC`. Only one control channel is supported. Configure the "number of cheapest hours per day" to control how many hours the spa heats to `TEMP_HIGH`.
 
 ## Manual override
 
-The script detects if somebody manually sets the pool temperature to a value neither TEMP_HIGH nor TEMP_LOW and disables the pörssäri control for 8 hours. If the application restarts during this time, the 8-hour timeout starts again from the restart.
+The system detects manual temperature changes made via the physical spa controls or the ControlMySpa app. If the spa's desired temperature doesn't match `TEMP_HIGH` or `TEMP_LOW`, automatic control is paused for 12 hours.
 
-I use this feature to manually set the pool temperature to 36.5 (which, in my case, is neither TEMP_HIGH=37 nor TEMP_LOW=27) through the ControlMySpa mobile app and temporarily disable the Pörssäri controls for eight hours when I plan pool usage, e.g., when expecting guests.
+This is useful for pre-heating before guests: set the spa to 36.5°C (neither `TEMP_HIGH=37` nor `TEMP_LOW=27`) via the app, and Pörssäri control pauses automatically.
 
-Pörssäri controls resume when the pool temperature is manually set to either TEMP_HIGH or TEMP_LOW, or automatically when the 8h timeout expires.
+Override can also be toggled via the web GUI or Telegram bot (`/override`, `/heat`, `/cold`). Automatic control resumes when the 12h timeout expires or override is manually disabled.
 
-## Deployment (OpenShift / GitOps)
+**Note:** If the spa temperature doesn't match `TEMP_HIGH` or `TEMP_LOW` at startup, override detection triggers immediately with a 12h delay.
 
-Kubernetes manifests are in `deploy/`. Secrets are encrypted with [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age).
+## Telegram bot
+
+If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, the bot responds to:
+
+| Command | Description |
+|---------|-------------|
+| `/status` | Current and desired temperature, heating estimate |
+| `/override` | Toggle manual override on/off |
+| `/heat` / `/hot` | Heat to TEMP_HIGH-0.5°C for 12h |
+| `/cold` | Cool to TEMP_LOW+0.5°C for 24h |
+| `/schedule` | Show Pörssäri hourly schedule |
+
+The bot also sends alerts for stale temperature readings and manual override events.
+
+## Deployment (Kubernetes / GitOps)
+
+Kubernetes manifests are in `deploy/`. Secrets are encrypted with [SOPS](https://github.com/getsops/sops) + [age](https://github.com/FiloSottile/age). A PVC provides persistent storage for the SQLite database.
 
 ### Editing secrets
 
@@ -51,17 +87,15 @@ Kubernetes manifests are in `deploy/`. Secrets are encrypted with [SOPS](https:/
 SOPS_AGE_KEY_FILE=.sops-age-key.txt sops deploy/secret.yaml
 ```
 
-This opens the decrypted secret in your editor. Save and close to re-encrypt automatically.
-
 ### Setting up on a new machine
 
 1. Get the age private key from a team member or your password manager
 2. Save it to `.sops-age-key.txt` in the repo root (gitignored)
-3. Verify decryption works: `SOPS_AGE_KEY_FILE=.sops-age-key.txt sops --decrypt deploy/secret.yaml`
+3. Verify: `SOPS_AGE_KEY_FILE=.sops-age-key.txt sops --decrypt deploy/secret.yaml`
 
 ### CI/CD
 
-GitHub Actions automatically deploys to OpenShift on push to `main`. Required GitHub secrets:
+GitHub Actions deploys to OpenShift on push to `main`. Required GitHub secrets:
 
 - `SOPS_AGE_KEY` — age private key for decrypting secrets
 - `OPENSHIFT_TOKEN` — OpenShift service account token
@@ -69,5 +103,6 @@ GitHub Actions automatically deploys to OpenShift on push to `main`. Required Gi
 
 ## References
 
-Based on https://github.com/Porssari/PicoW-client/tree/main/release
-Uses the controlmyspa Python module: https://github.com/arska/controlmyspa
+- Pörssäri client reference: https://github.com/Porssari/PicoW-client/tree/main/release
+- ControlMySpa Python module: https://github.com/arska/controlmyspa
+- Open-Meteo weather API: https://open-meteo.com
