@@ -8,7 +8,7 @@ Nordpool electricity-price-based temperature control for Balboa ControlMySpa hot
 
 ## Architecture
 
-Single-file Flask app (`app.py`) with no persistent storage. All state is in-memory:
+Single-file Flask app (`app.py`). Temperature history is persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
 - `porssari_config` — cached Pörssäri schedule (dict)
 - `temperature_history` — 48h ring buffer of temp readings (`collections.deque(maxlen=192)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`
 - `manual_override_endtime` — datetime for manual override expiry
@@ -38,6 +38,7 @@ TEMP_LOW=27          # Temperature during expensive hours
 TEMP_OVERRIDE=0      # If non-zero, overrides all logic with this temp
 WEATHER_LAT=60.45    # Latitude for outside-temperature lookup (default: 20900 Turku)
 WEATHER_LON=22.27    # Longitude for outside-temperature lookup (default: 20900 Turku)
+SQLITE_PATH=/data/temperatures.db  # Path to SQLite DB for persistent temp history (disabled if dir missing)
 PORT=8080            # Web server port
 SENTRY_URL           # Optional Sentry DSN for error tracking
 TELEGRAM_BOT_TOKEN   # Optional Telegram bot token for stale temp alerts

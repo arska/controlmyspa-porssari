@@ -30,6 +30,8 @@ spec:
               value: "10"
             - name: TEMP_OVERRIDE
               value: "0"
+            - name: SQLITE_PATH
+              value: "/data/temperatures.db"
           envFrom:
             - secretRef:
                 name: controlmyspa-porssari
@@ -42,9 +44,16 @@ spec:
               port: 8080
             initialDelaySeconds: 3
             periodSeconds: 30
+          volumeMounts:
+            - name: data
+              mountPath: /data
           readinessProbe:
             httpGet:
               path: /
               port: 8080
             initialDelaySeconds: 2
             periodSeconds: 10
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: controlmyspa-porssari-data
