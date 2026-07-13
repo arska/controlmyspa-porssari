@@ -2,6 +2,7 @@
 
 import datetime
 import json
+import sqlite3
 import time
 from unittest.mock import MagicMock, patch
 
@@ -24,6 +25,8 @@ def _reset_state():
         0, tz=datetime.UTC
     )
     app_module.STALE_ALERT_ACTIVE = False
+    app_module.latest_outside_temp = None
+    app_module.db_conn = None
     yield
 
 
@@ -130,6 +133,13 @@ class TestTemperatureAPI:
         data = resp.get_json()
         assert data["temp_high"] == 37
         assert data["temp_low"] == 27
+
+    def test_returns_outside_temp(self, client):
+        """Returns the latest outside temperature."""
+        app_module.latest_outside_temp = 7.5
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert data["outside_temp"] == 7.5
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     def test_returns_future_schedule(self, client, sample_porssari_config):
@@ -437,6 +447,19 @@ class TestSetTemp:
         # (it stays 37 from the mock)
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_records_outside_temp_in_history(self, mock_api_class):
+        """set_temp records the latest outside temp with each reading."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+        app_module.latest_outside_temp = -3.2
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+        assert app_module.temperature_history[-1]["outside_temp"] == -3.2
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.check_stale_temperature")
     @patch("app.controlmyspa.ControlMySpa")
     def test_calls_check_stale_temperature(self, mock_api_class, mock_check):
@@ -548,6 +571,43 @@ class TestUpdatePorssari:
             app_module.update_porssari()
 
         assert app_module.porssari_config == config
+
+
+# --- update_weather tests ---
+
+
+class TestUpdateWeather:
+    """Tests for the update_weather() function."""
+
+    @patch("app.requests.get")
+    def test_fetches_outside_temp(self, mock_get):
+        """Successfully parses Open-Meteo response and stores outside temp."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"current": {"temperature_2m": 12.3}}
+        mock_get.return_value = mock_response
+
+        with app_module.APP.app_context():
+            app_module.update_weather()
+
+        assert app_module.latest_outside_temp == 12.3
+
+    @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
+    def test_keeps_last_value_on_error(self, mock_get):
+        """Leaves the previous value untouched when the API is unreachable."""
+        app_module.latest_outside_temp = 5.0
+        with app_module.APP.app_context():
+            app_module.update_weather()
+        assert app_module.latest_outside_temp == 5.0
+
+    @patch("app.requests.get")
+    def test_handles_malformed_response(self, mock_get):
+        """Does not crash when the response is missing expected keys."""
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"unexpected": "shape"}
+        mock_get.return_value = mock_response
+        with app_module.APP.app_context():
+            app_module.update_weather()
+        assert app_module.latest_outside_temp is None
 
 
 # --- Telegram tests ---
@@ -1141,3 +1201,109 @@ class TestInitialize:
         app_module.initialize()
         webhook_calls = [c for c in mock_post.call_args_list if "setWebhook" in str(c)]
         assert len(webhook_calls) == 0
+
+
+class TestSQLitePersistence:
+    """Tests for SQLite persistence."""
+
+    def test_init_db_creates_table(self, tmp_path, monkeypatch):
+        """init_db() creates the temperature_readings table."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        with app_module.APP.app_context():
+            app_module.init_db()
+        assert app_module.db_conn is not None
+        cursor = app_module.db_conn.execute(
+            "SELECT name FROM sqlite_master "
+            "WHERE type='table' AND name='temperature_readings'"
+        )
+        assert cursor.fetchone() is not None
+        app_module.db_conn.close()
+
+    def test_sqlite_disabled_when_dir_missing(self, monkeypatch):
+        """init_db() sets db_conn to None when SQLITE_PATH dir doesn't exist."""
+        monkeypatch.setenv("SQLITE_PATH", "/nonexistent/path/test.db")
+        with app_module.APP.app_context():
+            app_module.init_db()
+        assert app_module.db_conn is None
+
+    def test_startup_backfill_from_sqlite(self, tmp_path, monkeypatch):
+        """init_db() backfills the deque from existing SQLite data."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+
+        # Pre-populate the DB with rows
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE temperature_readings "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "time TEXT NOT NULL, current_temp REAL NOT NULL, "
+            "desired_temp REAL NOT NULL, outside_temp REAL)"
+        )
+        now = datetime.datetime.now(tz=datetime.UTC)
+        recent = (now - datetime.timedelta(hours=1)).isoformat()
+        old = (now - datetime.timedelta(hours=72)).isoformat()
+        conn.execute(
+            "INSERT INTO temperature_readings "
+            "(time, current_temp, desired_temp, outside_temp) "
+            "VALUES (?, ?, ?, ?)",
+            (recent, 35.0, 37.0, 5.0),
+        )
+        conn.execute(
+            "INSERT INTO temperature_readings "
+            "(time, current_temp, desired_temp, outside_temp) "
+            "VALUES (?, ?, ?, ?)",
+            (old, 30.0, 27.0, -2.0),
+        )
+        conn.commit()
+        conn.close()
+
+        app_module.temperature_history.clear()
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        # Only the recent row (within 48h) should be backfilled
+        assert len(app_module.temperature_history) == 1
+        assert app_module.temperature_history[0]["current_temp"] == 35.0
+        assert app_module.temperature_history[0]["outside_temp"] == 5.0
+        app_module.db_conn.close()
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_set_temp_writes_to_sqlite(self, mock_api_class, tmp_path, monkeypatch):
+        """set_temp() writes a row to SQLite alongside the deque."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+        app_module.latest_outside_temp = 8.0
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        rows = app_module.db_conn.execute(
+            "SELECT current_temp, desired_temp, outside_temp FROM temperature_readings"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == (34.5, 37.0, 8.0)
+        app_module.db_conn.close()
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_set_temp_works_without_sqlite(self, mock_api_class):
+        """set_temp() works normally when SQLite is disabled (db_conn is None)."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+
+        assert app_module.db_conn is None
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        assert len(app_module.temperature_history) == 1
