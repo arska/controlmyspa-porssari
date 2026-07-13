@@ -10,7 +10,7 @@ Nordpool electricity-price-based temperature control for Balboa ControlMySpa hot
 
 Single-file Flask app (`app.py`). Temperature history is persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
 - `porssari_config` — cached Pörssäri schedule (dict)
-- `temperature_history` — 48h ring buffer of temp readings (`collections.deque(maxlen=192)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`
+- `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=999)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; deque is backfilled from the last 48h on startup.
 - `manual_override_endtime` — datetime for manual override expiry
 - `latest_outside_temp` — most recent outside air temperature (°C), refreshed hourly
 - `cache` — Flask-Caching SimpleCache for pool temps (15min TTL)

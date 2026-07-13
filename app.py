@@ -11,6 +11,7 @@ import logging
 import os
 import pathlib
 import sqlite3
+import threading
 from zoneinfo import ZoneInfo
 
 import controlmyspa
@@ -40,7 +41,7 @@ WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueErr
 # Average heating rate in °C per hour, measured empirically
 HEATING_RATE_PER_HOUR = 1.5
 porssari_config = {}
-# 48h of data at 15min intervals = 192 data points
+# Generous in-memory buffer; SQLite is the source of truth for persistence
 temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 
 # Latest outside air temperature in °C (or None), refreshed hourly by
@@ -49,6 +50,7 @@ temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 latest_outside_temp = None  # pylint: disable=invalid-name
 
 db_conn: sqlite3.Connection | None = None  # pylint: disable=invalid-name
+db_lock = threading.Lock()
 
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
@@ -491,18 +493,19 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     }
                 )
                 if db_conn is not None:
-                    db_conn.execute(
-                        "INSERT INTO temperature_readings "
-                        "(time, current_temp, desired_temp, outside_temp) "
-                        "VALUES (?, ?, ?, ?)",
-                        (
-                            temperature_history[-1]["time"],
-                            pool["current_temp"],
-                            pool["desired_temp"],
-                            latest_outside_temp,
-                        ),
-                    )
-                    db_conn.commit()
+                    with db_lock:
+                        db_conn.execute(
+                            "INSERT INTO temperature_readings "
+                            "(time, current_temp, desired_temp, outside_temp) "
+                            "VALUES (?, ?, ?, ?)",
+                            (
+                                temperature_history[-1]["time"],
+                                pool["current_temp"],
+                                pool["desired_temp"],
+                                latest_outside_temp,
+                            ),
+                        )
+                        db_conn.commit()
 
                 APP.logger.info(
                     "current temp: %s, desired temp: %s",

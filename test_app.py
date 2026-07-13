@@ -3,7 +3,6 @@
 import datetime
 import json
 import sqlite3
-import tempfile  # noqa: F401
 import time
 from unittest.mock import MagicMock, patch
 
