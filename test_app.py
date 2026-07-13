@@ -1268,3 +1268,43 @@ class TestSQLitePersistence:
         assert app_module.temperature_history[0]["current_temp"] == 35.0
         assert app_module.temperature_history[0]["outside_temp"] == 5.0
         app_module.db_conn.close()
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_set_temp_writes_to_sqlite(self, mock_api_class, tmp_path, monkeypatch):
+        """set_temp() writes a row to SQLite alongside the deque."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+        app_module.latest_outside_temp = 8.0
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        rows = app_module.db_conn.execute(
+            "SELECT current_temp, desired_temp, outside_temp FROM temperature_readings"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == (34.5, 37.0, 8.0)
+        app_module.db_conn.close()
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_set_temp_works_without_sqlite(self, mock_api_class):
+        """set_temp() works normally when SQLite is disabled (db_conn is None)."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+
+        assert app_module.db_conn is None
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        assert len(app_module.temperature_history) == 1

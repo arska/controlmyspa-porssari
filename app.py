@@ -490,6 +490,19 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                         "outside_temp": latest_outside_temp,
                     }
                 )
+                if db_conn is not None:
+                    db_conn.execute(
+                        "INSERT INTO temperature_readings "
+                        "(time, current_temp, desired_temp, outside_temp) "
+                        "VALUES (?, ?, ?, ?)",
+                        (
+                            temperature_history[-1]["time"],
+                            pool["current_temp"],
+                            pool["desired_temp"],
+                            latest_outside_temp,
+                        ),
+                    )
+                    db_conn.commit()
 
                 APP.logger.info(
                     "current temp: %s, desired temp: %s",
