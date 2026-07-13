@@ -9,6 +9,8 @@ import datetime
 import json
 import logging
 import os
+import pathlib
+import sqlite3
 from zoneinfo import ZoneInfo
 
 import controlmyspa
@@ -45,6 +47,8 @@ temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 # update_weather(). Recorded alongside spa temps to later model
 # temperature-dependent cooling. Mutable global, not a constant.
 latest_outside_temp = None  # pylint: disable=invalid-name
+
+db_conn: sqlite3.Connection | None = None  # pylint: disable=invalid-name
 
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
@@ -220,8 +224,58 @@ And another example across midnight:
 """
 
 
+def init_db() -> None:
+    """Open the SQLite database and backfill the temperature deque.
+
+    If the parent directory of SQLITE_PATH does not exist, SQLite is
+    silently disabled and the app runs in-memory only.
+    """
+    global db_conn  # noqa: PLW0603
+    db_path = pathlib.Path(os.getenv("SQLITE_PATH", "/data/temperatures.db"))
+    if not db_path.parent.exists():
+        APP.logger.warning(
+            "SQLite disabled: directory %s does not exist", db_path.parent
+        )
+        return
+    db_conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    db_conn.execute("PRAGMA journal_mode=WAL")
+    db_conn.execute(
+        "CREATE TABLE IF NOT EXISTS temperature_readings ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "time TEXT NOT NULL, "
+        "current_temp REAL NOT NULL, "
+        "desired_temp REAL NOT NULL, "
+        "outside_temp REAL)"
+    )
+    db_conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_readings_time ON temperature_readings(time)"
+    )
+    db_conn.commit()
+
+    # Backfill the in-memory deque from the last 48h
+    cutoff = (
+        datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=48)
+    ).isoformat()
+    rows = db_conn.execute(
+        "SELECT time, current_temp, desired_temp, outside_temp "
+        "FROM temperature_readings WHERE time >= ? ORDER BY time",
+        (cutoff,),
+    ).fetchall()
+    for time_str, current_temp, desired_temp, outside_temp in rows:
+        temperature_history.append(
+            {
+                "time": time_str,
+                "current_temp": current_temp,
+                "desired_temp": desired_temp,
+                "outside_temp": outside_temp,
+            }
+        )
+    APP.logger.info("loaded %d temperature readings from SQLite", len(rows))
+
+
 def initialize() -> None:
     """Initialize scheduled jobs and run the control loop."""
+    init_db()
     scheduler.start()
     scheduler.add_job(
         control,
