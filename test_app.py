@@ -83,9 +83,22 @@ class TestStatusPage:
 
     def test_status_page_loads_without_cache(self, client):
         """Status page renders even with no cached data (API failure)."""
-        with patch(
-            "app.controlmyspa.ControlMySpa",
-            side_effect=requests.exceptions.ConnectionError("no api"),
+        real_monotonic = time.monotonic
+        fake_offset = [0.0]
+
+        def advancing_monotonic():
+            return real_monotonic() + fake_offset[0]
+
+        def advancing_sleep(seconds):
+            fake_offset[0] += seconds
+
+        with (
+            patch(
+                "app.controlmyspa.ControlMySpa",
+                side_effect=requests.exceptions.ConnectionError("no api"),
+            ),
+            patch("time.monotonic", side_effect=advancing_monotonic),
+            patch("tenacity.nap.time.sleep", side_effect=advancing_sleep),
         ):
             resp = client.get("/")
             assert resp.status_code == 200
