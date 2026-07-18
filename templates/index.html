@@ -155,8 +155,11 @@
     function toggleOverride(action) {
         const headers = {'Content-Type': 'application/json'};
         if (authRequired) {
-            const pw = prompt('Password:');
-            if (pw === null) return;
+            let pw = localStorage.getItem('adminPassword');
+            if (!pw) {
+                pw = prompt('Password:');
+                if (pw === null) return;
+            }
             headers['Authorization'] = 'Bearer ' + pw;
         }
         fetch('/api/override', {
@@ -165,8 +168,10 @@
             body: JSON.stringify({action: action})
         }).then(resp => {
             if (resp.status === 401) {
+                localStorage.removeItem('adminPassword');
                 alert('Wrong password');
             } else {
+                if (authRequired) localStorage.setItem('adminPassword', headers['Authorization'].slice(7));
                 location.reload();
             }
         });
