@@ -4,8 +4,6 @@ We use https://porssari.fi for time- and price-based temperature control of
 https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 """
 
-from __future__ import annotations
-
 import collections
 import datetime
 import functools
@@ -15,7 +13,6 @@ import os
 import pathlib
 import sqlite3
 import threading
-from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import controlmyspa
@@ -29,9 +26,6 @@ from dotenv import load_dotenv
 from flask_caching import Cache
 from sentry_sdk.integrations.flask import FlaskIntegration
 from werkzeug.middleware.proxy_fix import ProxyFix
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
@@ -582,14 +576,14 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
         )
 
 
-def require_auth[**P, R](f: Callable[P, R]) -> Callable[P, R | tuple]:
+def require_auth(f):  # noqa: ANN001, ANN201
     """Require Authorization: Bearer <ADMIN_PASSWORD> on protected endpoints.
 
     If ADMIN_PASSWORD is not set, all requests pass through (no auth).
     """
 
     @functools.wraps(f)
-    def decorated(*args: P.args, **kwargs: P.kwargs) -> R | tuple:
+    def decorated(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
         password = os.getenv("ADMIN_PASSWORD")
         if not password:
             return f(*args, **kwargs)
