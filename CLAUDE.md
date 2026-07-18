@@ -39,6 +39,7 @@ TEMP_OVERRIDE=0      # If non-zero, overrides all logic with this temp
 WEATHER_LAT=60.45    # Latitude for outside-temperature lookup (default: 20900 Turku)
 WEATHER_LON=22.27    # Longitude for outside-temperature lookup (default: 20900 Turku)
 SQLITE_PATH=/data/temperatures.db  # Path to SQLite DB for persistent temp history (disabled if dir missing)
+ADMIN_PASSWORD       # Optional password protecting write endpoints (POST /api/override)
 PORT=8080            # Web server port
 SENTRY_URL           # Optional Sentry DSN for error tracking
 TELEGRAM_BOT_TOKEN   # Optional Telegram bot token for stale temp alerts

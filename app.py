@@ -6,6 +6,7 @@ https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 
 import collections
 import datetime
+import functools
 import json
 import logging
 import os
@@ -575,6 +576,25 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
         )
 
 
+def require_auth(f):  # noqa: ANN001, ANN201
+    """Require Authorization: Bearer <ADMIN_PASSWORD> on protected endpoints.
+
+    If ADMIN_PASSWORD is not set, all requests pass through (no auth).
+    """
+
+    @functools.wraps(f)
+    def decorated(*args, **kwargs):  # noqa: ANN002, ANN003, ANN202
+        password = os.getenv("ADMIN_PASSWORD")
+        if not password:
+            return f(*args, **kwargs)
+        auth = flask.request.headers.get("Authorization", "")
+        if auth != f"Bearer {password}":
+            return flask.jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
 @APP.route("/")
 def status() -> str:
     """WebGUI to show current porssari configuration and (cached) pool temperatures."""
@@ -631,10 +651,12 @@ def status() -> str:
         temp_high=temp_high,
         temp_low=int(os.getenv("TEMP_LOW", "0")),
         outside_temp=latest_outside_temp,
+        auth_required=bool(os.getenv("ADMIN_PASSWORD")),
     )
 
 
 @APP.route("/api/override", methods=["POST"])
+@require_auth
 def api_override() -> flask.Response:
     """Toggle manual override on/off via the web GUI."""
     global manual_override_endtime  # noqa: PLW0603
