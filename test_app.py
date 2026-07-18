@@ -1156,6 +1156,75 @@ class TestTelegramWebhook:
         mock_tg.assert_called()
 
 
+class TestAdminAuth:
+    """Tests for admin password auth on write endpoints."""
+
+    @patch.dict("os.environ", {"ADMIN_PASSWORD": "secret123"})
+    def test_override_requires_auth(self, client):
+        """POST /api/override returns 401 without auth when ADMIN_PASSWORD is set."""
+        resp = client.post(
+            "/api/override",
+            json={"action": "enable"},
+            content_type="application/json",
+        )
+        assert resp.status_code == 401
+        assert resp.get_json()["error"] == "unauthorized"
+
+    @patch.dict("os.environ", {"ADMIN_PASSWORD": "secret123"})
+    def test_override_accepts_correct_auth(self, client):
+        """POST /api/override works with correct Bearer token."""
+        resp = client.post(
+            "/api/override",
+            json={"action": "enable"},
+            content_type="application/json",
+            headers={"Authorization": "Bearer secret123"},
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["override_active"] is True
+
+    @patch.dict("os.environ", {"ADMIN_PASSWORD": "secret123"})
+    def test_override_rejects_wrong_auth(self, client):
+        """POST /api/override returns 401 with wrong Bearer token."""
+        resp = client.post(
+            "/api/override",
+            json={"action": "enable"},
+            content_type="application/json",
+            headers={"Authorization": "Bearer wrongpassword"},
+        )
+        assert resp.status_code == 401
+
+    def test_override_works_without_admin_password(self, client):
+        """POST /api/override works normally when ADMIN_PASSWORD is not set."""
+        resp = client.post(
+            "/api/override",
+            json={"action": "enable"},
+            content_type="application/json",
+        )
+        assert resp.status_code == 200
+        assert resp.get_json()["override_active"] is True
+
+    @patch.dict("os.environ", {"ADMIN_PASSWORD": "secret123"})
+    def test_status_page_sets_auth_required_true(self, client):
+        """GET / passes auth_required=True when ADMIN_PASSWORD is set."""
+        app_module.cache.set("pool", {"current_temp": 35.0, "desired_temp": 37})
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"authRequired = true" in resp.data
+
+    def test_status_page_sets_auth_required_false(self, client):
+        """GET / passes auth_required=False when ADMIN_PASSWORD is not set."""
+        app_module.cache.set("pool", {"current_temp": 35.0, "desired_temp": 37})
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert b"authRequired = false" in resp.data
+
+    @patch.dict("os.environ", {"ADMIN_PASSWORD": "secret123"})
+    def test_get_endpoints_remain_open(self, client):
+        """GET endpoints don't require auth even when ADMIN_PASSWORD is set."""
+        resp = client.get("/api/temperatures")
+        assert resp.status_code == 200
+
+
 class TestInitialize:
     """Tests for the initialize() function."""
 

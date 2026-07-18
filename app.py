@@ -4,14 +4,18 @@ We use https://porssari.fi for time- and price-based temperature control of
 https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
 """
 
+from __future__ import annotations
+
 import collections
 import datetime
+import functools
 import json
 import logging
 import os
 import pathlib
 import sqlite3
 import threading
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import controlmyspa
@@ -25,6 +29,9 @@ from dotenv import load_dotenv
 from flask_caching import Cache
 from sentry_sdk.integrations.flask import FlaskIntegration
 from werkzeug.middleware.proxy_fix import ProxyFix
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
@@ -575,6 +582,25 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
         )
 
 
+def require_auth[**P, R](f: Callable[P, R]) -> Callable[P, R | tuple]:
+    """Require Authorization: Bearer <ADMIN_PASSWORD> on protected endpoints.
+
+    If ADMIN_PASSWORD is not set, all requests pass through (no auth).
+    """
+
+    @functools.wraps(f)
+    def decorated(*args: P.args, **kwargs: P.kwargs) -> R | tuple:
+        password = os.getenv("ADMIN_PASSWORD")
+        if not password:
+            return f(*args, **kwargs)
+        auth = flask.request.headers.get("Authorization", "")
+        if auth != f"Bearer {password}":
+            return flask.jsonify({"error": "unauthorized"}), 401
+        return f(*args, **kwargs)
+
+    return decorated
+
+
 @APP.route("/")
 def status() -> str:
     """WebGUI to show current porssari configuration and (cached) pool temperatures."""
@@ -631,10 +657,12 @@ def status() -> str:
         temp_high=temp_high,
         temp_low=int(os.getenv("TEMP_LOW", "0")),
         outside_temp=latest_outside_temp,
+        auth_required=bool(os.getenv("ADMIN_PASSWORD")),
     )
 
 
 @APP.route("/api/override", methods=["POST"])
+@require_auth
 def api_override() -> flask.Response:
     """Toggle manual override on/off via the web GUI."""
     global manual_override_endtime  # noqa: PLW0603

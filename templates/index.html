@@ -150,12 +150,26 @@
 {% endif %}
 
 <script>
+    const authRequired = {{ 'true' if auth_required else 'false' }};
+
     function toggleOverride(action) {
+        const headers = {'Content-Type': 'application/json'};
+        if (authRequired) {
+            const pw = prompt('Password:');
+            if (pw === null) return;
+            headers['Authorization'] = 'Bearer ' + pw;
+        }
         fetch('/api/override', {
             method: 'POST',
-            headers: {'Content-Type': 'application/json'},
+            headers: headers,
             body: JSON.stringify({action: action})
-        }).then(() => location.reload());
+        }).then(resp => {
+            if (resp.status === 401) {
+                alert('Wrong password');
+            } else {
+                location.reload();
+            }
+        });
     }
 
     fetch('/api/temperatures')

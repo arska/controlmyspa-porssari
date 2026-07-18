@@ -48,6 +48,7 @@ Configure using environment variables. For local development, put them in a `.en
 | `TELEGRAM_BOT_TOKEN` | | Telegram bot token for notifications and commands |
 | `TELEGRAM_CHAT_ID` | | Telegram chat ID(s), comma-separated for multiple users |
 | `TELEGRAM_WEBHOOK_URL` | | Base URL for Telegram webhook (e.g. `https://poreallas.aukia.com`) |
+| `ADMIN_PASSWORD` | | Password for write endpoints. If set, override actions require `Authorization: Bearer <password>` |
 
 ### Pörssäri.fi setup
 
