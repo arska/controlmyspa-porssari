@@ -1,12 +1,12 @@
-# Controlmyspa Pörssäri.fi
+# Controlmyspa Nordpool
 
-Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](https://github.com/arska/controlmyspa) hot tubs. Integrates with [Pörssäri.fi](https://porssari.fi) to heat the spa during the cheapest hours ("Pörssisähkö") and lower the temperature during expensive hours.
+Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](https://github.com/arska/controlmyspa) hot tubs. Fetches spot prices directly from [spot-hinta.fi](https://spot-hinta.fi) and heats the spa during the cheapest hours, lowering the temperature during expensive hours.
 
 ## Features
 
-- **Price-based heating** — heats to `TEMP_HIGH` during cheap Nordpool hours, cools to `TEMP_LOW` during expensive hours
-- **Web GUI** — temperature graph, pool status, Pörssäri schedule grid, manual override controls
-- **Telegram bot** — remote status checks, override toggle, heat/cold commands
+- **Direct Nordpool pricing** — fetches spot prices from spot-hinta.fi, picks the cheapest N hours per day to heat to `TEMP_HIGH`, cools to `TEMP_LOW` otherwise
+- **Web GUI** — temperature graph, pool status, price schedule grid with heating hours highlighted, manual override controls
+- **Telegram bot** — remote status checks, override toggle, heat/cold commands, price schedule with cents/kWh
 - **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), recorded alongside spa temps for future cooling-rate analysis
 - **Persistent history** — temperature readings stored in SQLite, surviving restarts
 - **Stale temperature alerts** — Telegram notifications when spa readings stop changing (gateway may be offline)
@@ -31,7 +31,6 @@ Configure using environment variables. For local development, put them in a `.en
 |----------|-------------|
 | `CONTROLMYSPA_USER` | Balboa account email |
 | `CONTROLMYSPA_PASS` | Balboa account password |
-| `PORSSARI_MAC` | MAC address registered on porssari.fi (must be unique on the platform) |
 | `TEMP_HIGH` | Temperature (°C) during cheap hours (e.g. `37`) |
 | `TEMP_LOW` | Temperature (°C) during expensive hours (e.g. `27`) |
 
@@ -40,6 +39,8 @@ Configure using environment variables. For local development, put them in a `.en
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEMP_OVERRIDE` | `0` | If non-zero, overrides all price logic with this temperature |
+| `HEATING_HOURS` | `3` | Number of cheapest hours per day to heat to `TEMP_HIGH` |
+| `PRICE_INTERVAL` | `60` | Price aggregation interval in minutes (`15` or `60`) |
 | `WEATHER_LAT` | `60.45` | Latitude for weather lookup (default: Turku) |
 | `WEATHER_LON` | `22.27` | Longitude for weather lookup (default: Turku) |
 | `SQLITE_PATH` | `/data/temperatures.db` | Path to SQLite DB for persistent temp history. SQLite is disabled if the parent directory doesn't exist, so local dev works without creating `/data/` |
@@ -50,15 +51,11 @@ Configure using environment variables. For local development, put them in a `.en
 | `TELEGRAM_WEBHOOK_URL` | | Base URL for Telegram webhook (e.g. `https://poreallas.aukia.com`) |
 | `ADMIN_PASSWORD` | | Password for write endpoints. If set, override actions require `Authorization: Bearer <password>` |
 
-### Pörssäri.fi setup
-
-On porssari.fi, create a new device of type "PICO W" with the MAC address defined in `PORSSARI_MAC`. Only one control channel is supported. Configure the "number of cheapest hours per day" to control how many hours the spa heats to `TEMP_HIGH`.
-
 ## Manual override
 
 The system detects manual temperature changes made via the physical spa controls or the ControlMySpa app. If the spa's desired temperature doesn't match `TEMP_HIGH` or `TEMP_LOW`, automatic control is paused for 12 hours.
 
-This is useful for pre-heating before guests: set the spa to 36.5°C (neither `TEMP_HIGH=37` nor `TEMP_LOW=27`) via the app, and Pörssäri control pauses automatically.
+This is useful for pre-heating before guests: set the spa to 36.5°C (neither `TEMP_HIGH=37` nor `TEMP_LOW=27`) via the app, and automatic control pauses.
 
 Override can also be toggled via the web GUI or Telegram bot (`/override`, `/heat`, `/cold`). Automatic control resumes when the 12h timeout expires or override is manually disabled.
 
@@ -74,7 +71,7 @@ If `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set, the bot responds to:
 | `/override` | Toggle manual override on/off |
 | `/heat` / `/hot` | Heat to TEMP_HIGH-0.5°C for 12h |
 | `/cold` | Cool to TEMP_LOW+0.5°C for 24h |
-| `/schedule` | Show Pörssäri hourly schedule |
+| `/schedule` | Show hourly electricity prices with heating hours marked |
 
 The bot also sends alerts for stale temperature readings and manual override events.
 
@@ -104,6 +101,6 @@ GitHub Actions deploys to OpenShift on push to `main`. Required GitHub secrets:
 
 ## References
 
-- Pörssäri client reference: https://github.com/Porssari/PicoW-client/tree/main/release
+- spot-hinta.fi API: https://api.spot-hinta.fi
 - ControlMySpa Python module: https://github.com/arska/controlmyspa
 - Open-Meteo weather API: https://open-meteo.com

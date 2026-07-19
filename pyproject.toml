@@ -1,7 +1,7 @@
 [project]
 name = "controlmyspa-porssari"
 version = "0.1.0"
-requires-python = ">=3.13"
+requires-python = ">=3.14"
 dependencies = [
     "controlmyspa",
     "flask",
@@ -73,6 +73,9 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
     "PT022",   # yield vs return in fixtures
     "ARG002",  # unused arguments common with mocks/fixtures
 ]
+
+[tool.pylint.design]
+max-module-lines = 1100
 
 [tool.pylint.messages_control]
 disable = ["pointless-string-statement", "global-statement"]
