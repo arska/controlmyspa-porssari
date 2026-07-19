@@ -159,6 +159,7 @@
             if (!pw) {
                 pw = prompt('Password:');
                 if (pw === null) return;
+                localStorage.setItem('adminPassword', pw);
             }
             headers['Authorization'] = 'Bearer ' + pw;
         }
@@ -171,7 +172,6 @@
                 localStorage.removeItem('adminPassword');
                 alert('Wrong password');
             } else {
-                if (authRequired) localStorage.setItem('adminPassword', pw);
                 location.reload();
             }
         });
