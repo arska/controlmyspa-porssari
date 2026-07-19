@@ -497,8 +497,57 @@ def update_prices() -> None:
                     "got %d price intervals from spot-hinta.fi", len(new_prices)
                 )
                 _persist_prices(new_prices)
+                calculate_schedule()
         except requests.exceptions.RequestException, KeyError, ValueError:
             APP.logger.exception("failed to update prices")
+
+
+def calculate_schedule() -> None:
+    """Pick the cheapest future hours to heat, respecting the rolling 24h budget.
+
+    Examines temperature_history to count hours already heated in the
+    trailing 24h window, then greedily picks the cheapest remaining
+    eligible hours up to HEATING_HOURS total.
+    """
+    global heating_schedule  # noqa: PLW0603
+    tz = ZoneInfo("Europe/Helsinki")
+    now_local = datetime.datetime.now(tz)
+    now_hour = now_local.replace(minute=0, second=0, microsecond=0)
+    heating_hours_budget = int(os.getenv("HEATING_HOURS", "3"))
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+
+    # Count distinct hours heated in the last 24h from temperature_history
+    cutoff_24h = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=24)
+    heated_hours: set[str] = set()
+    for entry in temperature_history:
+        entry_time = datetime.datetime.fromisoformat(entry["time"])
+        if entry_time >= cutoff_24h and entry["desired_temp"] >= temp_high:
+            entry_local = entry_time.astimezone(tz)
+            hour_key = entry_local.replace(
+                minute=0, second=0, microsecond=0
+            ).isoformat()
+            heated_hours.add(hour_key)
+
+    already_heated = len(heated_hours)
+    remaining_budget = max(0, heating_hours_budget - already_heated)
+
+    # Filter to future hours only and sort by price
+    future_prices = {
+        k: v
+        for k, v in hourly_prices.items()
+        if datetime.datetime.fromisoformat(k) >= now_hour
+    }
+    sorted_hours = sorted(future_prices, key=future_prices.get)
+
+    # Pick cheapest hours up to remaining budget
+    heating_schedule = set(sorted_hours[:remaining_budget])
+    APP.logger.info(
+        "schedule: %d hours planned (budget %d, used %d): %s",
+        len(heating_schedule),
+        heating_hours_budget,
+        already_heated,
+        sorted(heating_schedule),
+    )
 
 
 def control(*, skip_override_detection: bool = False) -> None:

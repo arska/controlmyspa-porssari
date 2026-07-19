@@ -5,6 +5,7 @@ import json
 import sqlite3
 import time
 from unittest.mock import MagicMock, patch
+from zoneinfo import ZoneInfo
 
 import pytest
 import requests
@@ -1460,3 +1461,80 @@ class TestUpdatePrices:
         assert len(rows) == 1
         assert rows[0] == ("2026-07-18T10:00:00+03:00", pytest.approx(0.02))
         app_module.db_conn.close()
+
+
+class TestCalculateSchedule:
+    """Tests for cheapest-hours schedule calculation."""
+
+    @patch.dict("os.environ", {"HEATING_HOURS": "2", "TEMP_HIGH": "37"})
+    def test_picks_cheapest_hours(self):
+        """calculate_schedule() picks the N cheapest future hours."""
+        now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
+        # Create prices for next 6 hours
+        prices = {}
+        for i in range(6):
+            dt = (now + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = float(5 - i)  # 5,4,3,2,1,0 — last is cheapest
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+        # Should pick the 2 cheapest (hours 4 and 5, prices 1.0 and 0.0)
+        assert len(app_module.heating_schedule) == 2
+        cheapest_keys = sorted(prices, key=prices.get)[:2]
+        assert app_module.heating_schedule == set(cheapest_keys)
+
+    @patch.dict("os.environ", {"HEATING_HOURS": "3", "TEMP_HIGH": "37"})
+    def test_respects_24h_budget(self):
+        """calculate_schedule() reduces budget based on recent heating history."""
+        tz = ZoneInfo("Europe/Helsinki")
+        now_local = datetime.datetime.now(tz)
+        # Simulate 2 distinct heated hours in the last 24h by anchoring to
+        # exact hour boundaries so the count is timing-independent.
+        hour_minus_3 = (now_local - datetime.timedelta(hours=3)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        hour_minus_2 = (now_local - datetime.timedelta(hours=2)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        for base_hour in (hour_minus_3, hour_minus_2):
+            for m in (0, 15, 30, 45):
+                t = base_hour + datetime.timedelta(minutes=m)
+                app_module.temperature_history.append(
+                    {
+                        "time": t.isoformat(),
+                        "current_temp": 35.0,
+                        "desired_temp": 37.0,
+                        "outside_temp": 10.0,
+                    }
+                )
+        # Create prices for next 6 hours
+        prices = {}
+        for i in range(6):
+            dt = (now_local + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = float(i)  # 0,1,2,3,4,5
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+        # Budget is 3, used 2, so only 1 hour should be scheduled
+        assert len(app_module.heating_schedule) == 1
+
+    @patch.dict("os.environ", {"HEATING_HOURS": "3", "TEMP_HIGH": "37"})
+    def test_skips_past_hours(self):
+        """calculate_schedule() ignores prices for past hours."""
+        tz = ZoneInfo("Europe/Helsinki")
+        now_local = datetime.datetime.now(tz)
+        past = (now_local - datetime.timedelta(hours=2)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        future = (now_local + datetime.timedelta(hours=1)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.hourly_prices = {
+            past.isoformat(): 0.001,  # super cheap but in the past
+            future.isoformat(): 0.05,
+        }
+        app_module.calculate_schedule()
+        assert past.isoformat() not in app_module.heating_schedule
+        assert future.isoformat() in app_module.heating_schedule
