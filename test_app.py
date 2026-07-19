@@ -28,6 +28,7 @@ def _reset_state():
     app_module.db_conn = None
     app_module.hourly_prices = {}
     app_module.heating_schedule = set()
+    app_module.cooling_k = app_module.DEFAULT_COOLING_K
     yield
 
 
@@ -1430,6 +1431,55 @@ class TestPriceScheduleAPI:
         mock_tg.assert_called_once()
         reply = mock_tg.call_args[0][0]
         assert "0.045" in reply or "4.5" in reply
+
+
+class TestCoolingModel:
+    """Tests for cooling rate estimation and temperature prediction."""
+
+    def test_estimate_cooling_rate(self):
+        """estimate_cooling_rate() calculates k from temperature drops."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        # Simulate cooling: pool at 37°C, outside 20°C, dropping 0.5°C over 5h
+        # k = (0.5/5) / (37 - 20) = 0.1 / 17 ≈ 0.00588
+        for i in range(3):
+            app_module.temperature_history.append(
+                {
+                    "time": (now - datetime.timedelta(hours=10 - i * 5)).isoformat(),
+                    "current_temp": 37.0 - i * 0.5,
+                    "desired_temp": 10.0,
+                    "outside_temp": 20.0,
+                }
+            )
+        result = app_module.estimate_cooling_rate()
+        assert result == pytest.approx(0.00588, abs=0.001)
+        assert app_module.cooling_k == result
+
+    def test_estimate_cooling_rate_default(self):
+        """estimate_cooling_rate() returns DEFAULT_COOLING_K with insufficient data."""
+        result = app_module.estimate_cooling_rate()
+        assert result == app_module.DEFAULT_COOLING_K
+        assert app_module.cooling_k == app_module.DEFAULT_COOLING_K
+
+    def test_predict_time_to_temp(self):
+        """predict_time_to_temp() calculates hours until target temp."""
+        app_module.cooling_k = 0.006
+        # Pool 37°C, outside 20°C, target 34°C
+        # hours = (37 - 34) / (0.006 * (37 - 20)) = 3 / 0.102 ≈ 29.4
+        hours = app_module.predict_time_to_temp(34.0, 37.0, 20.0)
+        assert hours == pytest.approx(29.4, abs=1.0)
+
+    def test_predict_time_to_temp_already_below(self):
+        """predict_time_to_temp() returns 0 when pool is already at or below target."""
+        app_module.cooling_k = 0.006
+        hours = app_module.predict_time_to_temp(34.0, 33.0, 20.0)
+        assert hours == 0.0
+
+    def test_predict_time_to_temp_cold_outside(self):
+        """predict_time_to_temp() returns shorter time with cold outside temp."""
+        app_module.cooling_k = 0.006
+        hours_warm = app_module.predict_time_to_temp(34.0, 37.0, 20.0)
+        hours_cold = app_module.predict_time_to_temp(34.0, 37.0, 0.0)
+        assert hours_cold < hours_warm
 
 
 class TestCalculateSchedule:

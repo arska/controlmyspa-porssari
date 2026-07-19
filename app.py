@@ -12,6 +12,7 @@ import logging
 import os
 import pathlib
 import sqlite3
+import statistics
 import threading
 from zoneinfo import ZoneInfo
 
@@ -46,6 +47,10 @@ PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
 PRICE_UPDATE_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 hourly_prices: dict[str, float] = {}
 heating_schedule: set[str] = set()
+DEFAULT_COOLING_K = 0.006
+MIN_COOLING_K = 0.002  # Pool can't cool slower than this (physical limit)
+MAX_COOLING_K = 0.020  # Pool can't cool faster than this (lid off in winter)
+cooling_k: float = DEFAULT_COOLING_K  # pylint: disable=invalid-name
 # Generous in-memory buffer; SQLite is the source of truth for persistence
 temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 
@@ -377,6 +382,73 @@ def update_prices() -> None:
                 )
         except PRICE_UPDATE_ERRORS:
             APP.logger.exception("failed to update prices")
+
+
+def estimate_cooling_rate() -> float:
+    """Estimate the cooling constant k from recent temperature history.
+
+    Scans for non-heating periods (desired_temp < TEMP_HIGH) and calculates
+    k from observed temperature drops using Newton's law of cooling.
+    Returns the median k or DEFAULT_COOLING_K if insufficient data.
+    """
+    global cooling_k  # noqa: PLW0603
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    k_values = []
+    history = list(temperature_history)
+    for i in range(1, len(history)):
+        prev, curr = history[i - 1], history[i]
+        # Only use non-heating periods
+        if prev["desired_temp"] >= temp_high or curr["desired_temp"] >= temp_high:
+            continue
+        if prev.get("outside_temp") is None or curr.get("outside_temp") is None:
+            continue
+        drop = prev["current_temp"] - curr["current_temp"]
+        if drop <= 0:
+            continue
+        dt_hours = (
+            datetime.datetime.fromisoformat(curr["time"])
+            - datetime.datetime.fromisoformat(prev["time"])
+        ).total_seconds() / 3600
+        if dt_hours <= 0:
+            continue
+        temp_diff = prev["current_temp"] - prev["outside_temp"]
+        if temp_diff <= 1:
+            continue
+        k_values.append((drop / dt_hours) / temp_diff)
+
+    min_data_points = 5
+    if len(k_values) >= min_data_points:
+        median_k = statistics.median(k_values)
+        clamped = max(MIN_COOLING_K, min(MAX_COOLING_K, median_k))
+        if clamped != median_k:
+            APP.logger.warning(
+                "cooling k=%.5f clamped to %.5f (bounds [%.3f, %.3f])",
+                median_k,
+                clamped,
+                MIN_COOLING_K,
+                MAX_COOLING_K,
+            )
+        cooling_k = clamped
+    else:
+        cooling_k = DEFAULT_COOLING_K
+    APP.logger.info("cooling rate k=%.5f (%d data points)", cooling_k, len(k_values))
+    return cooling_k
+
+
+def predict_time_to_temp(
+    target_temp: float, current_temp: float, outside_temp: float
+) -> float:
+    """Predict hours until pool drops from current_temp to target_temp.
+
+    Uses linear approximation of Newton's law of cooling.
+    Returns 0.0 if pool is already at or below target.
+    """
+    if current_temp <= target_temp:
+        return 0.0
+    temp_diff = current_temp - outside_temp
+    if temp_diff <= 0:
+        return 0.0
+    return (current_temp - target_temp) / (cooling_k * temp_diff)
 
 
 def calculate_schedule() -> None:
