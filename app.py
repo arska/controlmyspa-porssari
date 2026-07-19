@@ -41,6 +41,9 @@ WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueErr
 # Average heating rate in °C per hour, measured empirically
 HEATING_RATE_PER_HOUR = 1.5
 SPOT_HINTA_API = "https://api.spot-hinta.fi"
+# Named tuples for except clauses — ruff 0.15.21 strips inline parentheses.
+PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
+PRICE_UPDATE_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 hourly_prices: dict[str, float] = {}
 heating_schedule: set[str] = set()
 # Generous in-memory buffer; SQLite is the source of truth for persistence
@@ -301,7 +304,7 @@ def _fetch_price_entries() -> list[dict]:
             resp = requests.get(f"{SPOT_HINTA_API}{endpoint}", timeout=10)
             resp.raise_for_status()
             all_entries.extend(resp.json())
-        except requests.exceptions.RequestException, ValueError:
+        except PRICE_FETCH_ERRORS:
             APP.logger.exception("failed to fetch %s", endpoint)
     return all_entries
 
@@ -361,7 +364,7 @@ def update_prices() -> None:
                 )
                 _persist_prices(new_prices)
                 calculate_schedule()
-        except requests.exceptions.RequestException, KeyError, ValueError:
+        except PRICE_UPDATE_ERRORS:
             APP.logger.exception("failed to update prices")
 
 
