@@ -1,7 +1,6 @@
 """Tests for controlmyspa-porssari application."""
 
 import datetime
-import json
 import sqlite3
 import time
 from unittest.mock import MagicMock, patch
@@ -16,7 +15,6 @@ import app as app_module
 @pytest.fixture(autouse=True)
 def _reset_state():
     """Reset global state between tests."""
-    app_module.porssari_config = {}
     app_module.temperature_history.clear()
     app_module.manual_override_endtime = datetime.datetime.fromtimestamp(
         0, tz=datetime.UTC
@@ -39,35 +37,6 @@ def client():
     app_module.APP.config["TESTING"] = True
     with app_module.APP.test_client() as c:
         yield c
-
-
-@pytest.fixture
-def sample_porssari_config():
-    """Sample porssari.fi API response."""
-    return {
-        "Metadata": {
-            "Mac": "A1B2C3D4E5F6",
-            "Channels": "1",
-            "Date": "2023-12-16",
-            "Time": "21:26:00",
-            "Timestamp": "1702754760",
-            "Timestamp_offset": "7200",
-            "Hours_count": 24,
-        },
-        "Channel1": {
-            "0": "0",
-            "1": "1",
-            "2": "1",
-            "3": "0",
-            "10": "0",
-            "11": "0",
-            "12": "1",
-            "13": "0",
-            "21": "1",
-            "22": "1",
-            "23": "0",
-        },
-    }
 
 
 # --- Status page tests ---
@@ -106,13 +75,16 @@ class TestStatusPage:
             resp = client.get("/")
             assert resp.status_code == 200
 
-    def test_status_page_shows_porssari_config(self, client, sample_porssari_config):
-        """Status page shows porssari schedule when available."""
-        app_module.porssari_config = sample_porssari_config
+    def test_status_page_loads_with_heating_schedule(self, client):
+        """Status page renders when heating schedule is set."""
+        tz = ZoneInfo("Europe/Helsinki")
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.heating_schedule = {current_hour.isoformat()}
         app_module.cache.set("pool", {"current_temp": 35, "desired_temp": 37})
         resp = client.get("/")
         assert resp.status_code == 200
-        assert b"Porssari Schedule" in resp.data
 
 
 # --- Temperature API tests ---
@@ -156,29 +128,6 @@ class TestTemperatureAPI:
         resp = client.get("/api/temperatures")
         data = resp.get_json()
         assert data["outside_temp"] == 7.5
-
-    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
-    def test_returns_future_schedule(self, client, sample_porssari_config):
-        """Returns future porssari schedule mapped to temperatures."""
-        app_module.porssari_config = sample_porssari_config
-        resp = client.get("/api/temperatures")
-        data = resp.get_json()
-        assert len(data["future"]) > 0
-        targets = {p["target_temp"] for p in data["future"]}
-        assert targets <= {27, 37}
-
-    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
-    def test_future_schedule_within_24h(self, client, sample_porssari_config):
-        """Future schedule entries are all within 24h from now."""
-        app_module.porssari_config = sample_porssari_config
-        resp = client.get("/api/temperatures")
-        data = resp.get_json()
-        now = datetime.datetime.now(tz=datetime.UTC)
-        limit = now + datetime.timedelta(hours=24)
-        for point in data["future"]:
-            dt = datetime.datetime.fromisoformat(point["time"])
-            assert dt > now, f"Future entry should be after now, got {dt}"
-            assert dt <= limit, f"Future entry should be within 24h, got {dt}"
 
     def test_history_maxlen(self, client):
         """Temperature history respects 999-point max."""
@@ -351,44 +300,54 @@ class TestControlLogic:
     """Tests for the control() function."""
 
     @patch("app.set_temp")
-    def test_no_config_skips_control(self, mock_set_temp):
-        """Control does nothing without porssari config."""
-        with app_module.APP.app_context():
-            app_module.control()
-        mock_set_temp.assert_not_called()
-
-    @patch.dict(
-        "os.environ",
-        {"TEMP_HIGH": "37", "TEMP_LOW": "27", "TEMP_OVERRIDE": "0"},
-    )
-    @patch("app.set_temp")
-    def test_command_0_sets_low(self, mock_set_temp):
-        """Command '0' sets TEMP_LOW."""
-        app_module.porssari_config = {"Channel1": {str(h): "0" for h in range(24)}}
+    def test_no_prices_sets_low(self, mock_set_temp, monkeypatch):
+        """Control sets TEMP_LOW when no prices/schedule available."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "27")
+        monkeypatch.setenv("TEMP_OVERRIDE", "0")
+        app_module.heating_schedule = set()
         with app_module.APP.app_context():
             app_module.control()
         mock_set_temp.assert_called_once_with(27, skip_override_detection=False)
 
-    @patch.dict(
-        "os.environ",
-        {"TEMP_HIGH": "37", "TEMP_LOW": "27", "TEMP_OVERRIDE": "0"},
-    )
     @patch("app.set_temp")
-    def test_command_1_sets_high(self, mock_set_temp):
-        """Command '1' sets TEMP_HIGH."""
-        app_module.porssari_config = {"Channel1": {str(h): "1" for h in range(24)}}
+    def test_heating_hour_sets_high(self, mock_set_temp, monkeypatch):
+        """Control sets TEMP_HIGH when current hour is in heating_schedule."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "27")
+        monkeypatch.setenv("TEMP_OVERRIDE", "0")
+        tz = ZoneInfo("Europe/Helsinki")
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.heating_schedule = {current_hour.isoformat()}
         with app_module.APP.app_context():
             app_module.control()
         mock_set_temp.assert_called_once_with(37, skip_override_detection=False)
 
-    @patch.dict(
-        "os.environ",
-        {"TEMP_HIGH": "37", "TEMP_LOW": "27", "TEMP_OVERRIDE": "40"},
-    )
     @patch("app.set_temp")
-    def test_override_env_sets_override_temp(self, mock_set_temp):
+    def test_non_heating_hour_sets_low(self, mock_set_temp, monkeypatch):
+        """Control sets TEMP_LOW when current hour is not in heating_schedule."""
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "27")
+        monkeypatch.setenv("TEMP_OVERRIDE", "0")
+        tz = ZoneInfo("Europe/Helsinki")
+        # Put a different hour in the schedule
+        other_hour = (datetime.datetime.now(tz) + datetime.timedelta(hours=5)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.heating_schedule = {other_hour.isoformat()}
+        with app_module.APP.app_context():
+            app_module.control()
+        mock_set_temp.assert_called_once_with(27, skip_override_detection=False)
+
+    @patch("app.set_temp")
+    def test_temp_override_env(self, mock_set_temp, monkeypatch):
         """TEMP_OVERRIDE env var overrides all logic."""
-        app_module.porssari_config = {"Channel1": {str(h): "0" for h in range(24)}}
+        monkeypatch.setenv("TEMP_HIGH", "37")
+        monkeypatch.setenv("TEMP_LOW", "27")
+        monkeypatch.setenv("TEMP_OVERRIDE", "40")
+        app_module.heating_schedule = set()
         with app_module.APP.app_context():
             app_module.control()
         mock_set_temp.assert_called_once_with(40, skip_override_detection=False)
@@ -549,44 +508,6 @@ class TestSetTemp:
 
         # Should not have changed the temp — override is active
         assert mock_api.desired_temp == 33
-
-
-# --- update_porssari tests ---
-
-
-class TestUpdatePorssari:
-    """Tests for the update_porssari() function."""
-
-    @patch("app.scheduler")
-    @patch("app.requests.get")
-    def test_parses_config(self, mock_get, mock_scheduler):
-        """Successfully parses porssari API response."""
-        config = {
-            "Channel1": {"0": "1", "1": "0"},
-            "Metadata": {"Mac": "test"},
-        }
-        mock_response = MagicMock()
-        mock_response.text = json.dumps(config)
-        mock_get.return_value = mock_response
-
-        with app_module.APP.app_context():
-            app_module.update_porssari()
-
-        assert app_module.porssari_config == config
-
-    @patch("app.scheduler")
-    @patch("app.requests.get")
-    def test_handles_whitespace(self, mock_get, mock_scheduler):
-        """Handles extra whitespace in porssari response."""
-        config = {"Channel1": {"0": "1"}, "Metadata": {}}
-        mock_response = MagicMock()
-        mock_response.text = "\n  " + json.dumps(config) + "\n"
-        mock_get.return_value = mock_response
-
-        with app_module.APP.app_context():
-            app_module.update_porssari()
-
-        assert app_module.porssari_config == config
 
 
 # --- update_weather tests ---
@@ -1084,9 +1005,13 @@ class TestTelegramWebhook:
         },
     )
     @patch("app.send_telegram")
-    def test_schedule_command(self, mock_tg, client, sample_porssari_config):
-        """Bot responds to /schedule with porssari schedule."""
-        app_module.porssari_config = sample_porssari_config
+    def test_schedule_command(self, mock_tg, client):
+        """Bot responds to /schedule with heating schedule."""
+        tz = ZoneInfo("Europe/Helsinki")
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.heating_schedule = {current_hour.isoformat()}
         client.post(
             "/telegram/tok",
             json={"message": {"chat": {"id": 123}, "text": "/schedule"}},

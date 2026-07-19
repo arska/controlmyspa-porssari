@@ -1,13 +1,13 @@
 """Nordpool based temperature control for Balboa ControlMySpa Whirlpools.
 
-We use https://porssari.fi for time- and price-based temperature control of
-https://github.com/arska/controlmyspa[Balboa ControlMySpa] based Whirlpools.
+Fetches Nordpool spot prices via spot-hinta.fi, selects the cheapest hours
+to heat, and controls https://github.com/arska/controlmyspa[Balboa ControlMySpa]
+based whirlpools accordingly.
 """
 
 import collections
 import datetime
 import functools
-import json
 import logging
 import os
 import pathlib
@@ -30,7 +30,6 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
 scheduler = BackgroundScheduler()
-PORSSARI_API = "https://api.porssari.fi/getcontrols.php"
 # Free, keyless weather API. Defaults below point at 20900 Turku, Finland.
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 DEFAULT_WEATHER_LAT = "60.45"
@@ -42,7 +41,6 @@ WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueErr
 # Average heating rate in °C per hour, measured empirically
 HEATING_RATE_PER_HOUR = 1.5
 SPOT_HINTA_API = "https://api.spot-hinta.fi"
-porssari_config = {}
 hourly_prices: dict[str, float] = {}
 heating_schedule: set[str] = set()
 # Generous in-memory buffer; SQLite is the source of truth for persistence
@@ -160,76 +158,6 @@ def check_stale_temperature() -> None:
         STALE_ALERT_ACTIVE = False
 
 
-"""
-Example porssari.fi config:
-{'Channel1': {'0': '0',
-              '10': '0',
-              '11': '0',
-              '12': '0',
-              '13': '0',
-              '14': '0',
-              '15': '0',
-              '16': '0',
-              '17': '0',
-              '18': '0',
-              '19': '0',
-              '20': '0',
-              '21': '0',
-              '22': '0',
-              '23': '0',
-              '8': '0',
-              '9': '0'},
- 'Metadata': {'Channels': '1',
-              'Date': '2023-12-16',
-              'Fetch_url': 'https://api.porssari.fi/getcontrols.php',
-              'Hours_count': 17,
-              'Mac': 'A1B2C3D4E5F6',
-              'Time': '08:50:12',
-              'Timestamp': '1702709412',
-              'Timestamp_offset': '7200'}}
-
-And another example across midnight:
-{
-    "Metadata": {
-        "Mac": "A1B2C3D4E5F6",
-        "Channels": "1",
-        "Fetch_url": "https://api.porssari.fi/getcontrols.php",
-        "Date": "2023-12-16",
-        "Time": "21:26:00",
-        "Timestamp": "1702754760",
-        "Timestamp_offset": "7200",
-        "Hours_count": 24,
-    },
-    "Channel1": {
-        "21": "1",
-        "22": "1",
-        "23": "1",
-        "0": "0",
-        "1": "1",
-        "2": "1",
-        "3": "1",
-        "4": "1",
-        "5": "1",
-        "6": "1",
-        "7": "0",
-        "8": "0",
-        "9": "0",
-        "10": "0",
-        "11": "0",
-        "12": "0",
-        "13": "0",
-        "14": "0",
-        "15": "0",
-        "16": "0",
-        "17": "0",
-        "18": "0",
-        "19": "0",
-        "20": "0",
-    },
-}
-"""
-
-
 def init_db() -> None:
     """Open the SQLite database and backfill the temperature deque.
 
@@ -298,10 +226,10 @@ def initialize() -> None:
         max_instances=1,
     )
     scheduler.add_job(
-        update_porssari,
+        update_prices,
         "interval",
         minutes=15,
-        id="update_porssari",
+        id="update_prices",
         misfire_grace_time=None,
         coalesce=True,
         max_instances=1,
@@ -333,71 +261,6 @@ def initialize() -> None:
             APP.logger.info("registered telegram webhook: %s", full_url)
         except requests.exceptions.RequestException:
             APP.logger.exception("failed to register telegram webhook")
-
-
-def update_porssari() -> None:
-    """Fetch new configuration from porssari.fi.
-
-    The configuration is cached in memory to be able to control the pool even if
-    porssari.fi was temporarily offline
-    """
-    with (
-        sentry_sdk.start_transaction(op="task", name="Update Porssari"),
-        APP.app_context(),
-    ):
-        for attempt in tenacity.Retrying(
-            retry=(
-                tenacity.retry_if_exception_type(requests.exceptions.RequestException)
-                | tenacity.retry_if_exception_type(json.JSONDecodeError)
-            ),
-            wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-            stop=tenacity.stop_after_delay(600),
-            before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
-        ):
-            with attempt:
-                new_config = None
-                try:
-                    new_config = requests.get(
-                        PORSSARI_API,
-                        {
-                            "device_mac": os.getenv("PORSSARI_MAC"),
-                            "client": "controlmyspa-porssari-1",
-                        },
-                        timeout=10,
-                    )
-                    """
-                    2024-06-08: porssari started adding an extra newline before the JSON
-                    object, leading to JSON parse failure. stripping extra whitespace
-                    before JSON decoding here.
-                    """
-                    global porssari_config  # noqa: PLW0603
-                    porssari_config = json.loads(new_config.text.strip())
-                    APP.logger.info("got porssari config: %s", porssari_config)
-                    # run the control loop once after we have a (new) config,
-                    # especially on startup
-                    scheduler.add_job(
-                        control,
-                        "date",
-                        run_date=datetime.datetime.now(tz=datetime.UTC),
-                    )
-                except json.JSONDecodeError as exception:
-                    APP.logger.info(
-                        "received from porssari: %s '%s'",
-                        new_config,
-                        getattr(new_config, "text", "<no response>"),
-                    )
-                    APP.logger.info("porssari fetch failed: %s", exception)
-                    if not porssari_config:
-                        # retry in a minute if we don't have any config at all
-                        # else retry in the next normal 15m interval
-                        scheduler.add_job(
-                            update_porssari,
-                            "date",
-                            run_date=(
-                                datetime.datetime.now(tz=datetime.UTC)
-                                + datetime.timedelta(minutes=1)
-                            ),
-                        )
 
 
 def update_weather() -> None:
@@ -551,29 +414,25 @@ def calculate_schedule() -> None:
 
 
 def control(*, skip_override_detection: bool = False) -> None:
-    """Set the pool temperature according to porssari instructions."""
+    """Set the pool temperature based on the price-optimized heating schedule."""
     with sentry_sdk.start_transaction(op="task", name="Update Controlmyspa"):
-        if not porssari_config:
-            APP.logger.error("no porssari config present, not controlling")
-            return
-        current_hour = datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour
-        command = porssari_config.get("Channel1", {}).get(str(current_hour), "0")
+        tz = ZoneInfo("Europe/Helsinki")
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
         if int(os.getenv("TEMP_OVERRIDE", "0")):
-            # if set, override temperature independent of hour control
             set_temp(
                 int(os.getenv("TEMP_OVERRIDE", "0")),
                 skip_override_detection=skip_override_detection,
             )
-        elif command == "0":
-            # low temp
+        elif current_hour.isoformat() in heating_schedule:
             set_temp(
-                int(os.getenv("TEMP_LOW", "0")),
+                int(os.getenv("TEMP_HIGH", "0")),
                 skip_override_detection=skip_override_detection,
             )
         else:
-            # high temp
             set_temp(
-                int(os.getenv("TEMP_HIGH", "0")),
+                int(os.getenv("TEMP_LOW", "0")),
                 skip_override_detection=skip_override_detection,
             )
 
@@ -647,7 +506,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     and int(pool["desired_temp"]) != int(os.getenv("TEMP_LOW", "0"))
                 ):
                     # somebody set a manual temperature through the pool controls
-                    # let's disable porssari control for 12h
+                    # let's disable automatic control for 12h
                     global manual_override_endtime  # noqa: PLW0603
                     if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
                         # the end time is in the future -> let's wait
@@ -725,7 +584,7 @@ def require_auth(f):  # noqa: ANN001, ANN201
 
 @APP.route("/")
 def status() -> str:
-    """WebGUI to show current porssari configuration and (cached) pool temperatures."""
+    """WebGUI to show current heating schedule and (cached) pool temperatures."""
     pool = cache.get("pool")
     if pool is None:
         try:
@@ -766,7 +625,7 @@ def status() -> str:
 
     return flask.render_template(
         "index.html",
-        porssari_config=porssari_config,
+        heating_schedule=heating_schedule,
         current_hour=datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour,
         api=pool,
         manual_override_endtime=manual_override_endtime.astimezone(
@@ -841,36 +700,14 @@ def api_override() -> flask.Response:
 
 @APP.route("/api/temperatures")
 def api_temperatures() -> flask.Response:
-    """Return temperature history and future porssari schedule as JSON."""
-    tz = ZoneInfo("Europe/Helsinki")
+    """Return temperature history and future heating schedule as JSON."""
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     temp_low = int(os.getenv("TEMP_LOW", "0"))
-
-    # Future schedule from porssari config
-    future = []
-    if porssari_config.get("Channel1"):
-        now = datetime.datetime.now(tz)
-        for hour_str, command in porssari_config["Channel1"].items():
-            hour = int(hour_str)
-            # Build a datetime for this hour; past hours wrap to tomorrow
-            dt = now.replace(hour=hour, minute=0, second=0, microsecond=0)
-            if dt <= now:
-                dt += datetime.timedelta(days=1)
-            # Only show schedule up to 24h from now
-            if dt > now + datetime.timedelta(hours=24):
-                continue
-            future.append(
-                {
-                    "time": dt.astimezone(datetime.UTC).isoformat(),
-                    "target_temp": temp_high if command == "1" else temp_low,
-                }
-            )
-        future.sort(key=lambda x: x["time"])
 
     return flask.jsonify(
         {
             "history": list(temperature_history),
-            "future": future,
+            "future": [],
             "temp_high": temp_high,
             "temp_low": temp_low,
             "outside_temp": latest_outside_temp,
@@ -909,7 +746,7 @@ def telegram_webhook(token: str) -> flask.Response:
             "/override - Toggle manual override\n"
             "/hot - Heat to TEMP_HIGH-0.5 for 12h\n"
             "/cold - Cool to TEMP_LOW for 24h\n"
-            "/schedule - Show porssari schedule",
+            "/schedule - Show heating schedule",
             chat_id=chat_id,
         )
 
@@ -999,20 +836,16 @@ def _handle_telegram_cold(chat_id: str) -> None:  # noqa: ARG001  # pylint: disa
 
 def _handle_telegram_schedule(chat_id: str) -> None:
     """Handle /schedule command."""
-    if not porssari_config.get("Channel1"):
+    if not heating_schedule:
         send_telegram("\u274c No schedule available", chat_id=chat_id)
         return
 
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    temp_low = int(os.getenv("TEMP_LOW", "0"))
-    lines = ["\U0001f4cb Porssari schedule:"]
-    for hour in range(24):
-        command = porssari_config["Channel1"].get(str(hour))
-        if command is None:
-            continue
-        temp = temp_high if command == "1" else temp_low
-        marker = "\U0001f525" if command == "1" else "\u2744\ufe0f"
-        lines.append(f"{hour:02d}:00 {marker} {temp}\u00b0C")
+    tz = ZoneInfo("Europe/Helsinki")
+    lines = ["\U0001f4cb Heating schedule:"]
+    for iso_key in sorted(heating_schedule):
+        dt = datetime.datetime.fromisoformat(iso_key).astimezone(tz)
+        lines.append(f"{dt.strftime('%d.%m %H:%M')} \U0001f525 {temp_high}\u00b0C")
     send_telegram("\n".join(lines), chat_id=chat_id)
 
 
