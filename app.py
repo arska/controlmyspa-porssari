@@ -754,6 +754,16 @@ def status() -> str:
         >= now_local.replace(minute=0, second=0, microsecond=0)
     ]
 
+    temp_min = float(os.getenv("TEMP_MIN", "34"))
+    predicted_deadline = None
+    if pool:
+        outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+        dh = predict_time_to_temp(temp_min, pool["current_temp"], outside)
+        if dh > 0:
+            predicted_deadline = datetime.datetime.now(
+                ZoneInfo("Europe/Helsinki")
+            ) + datetime.timedelta(hours=dh)
+
     return flask.render_template(
         "index.html",
         future_prices=future_prices,
@@ -770,6 +780,10 @@ def status() -> str:
         temp_low=int(os.getenv("TEMP_LOW", "0")),
         outside_temp=latest_outside_temp,
         auth_required=bool(os.getenv("ADMIN_PASSWORD")),
+        temp_min=temp_min,
+        predicted_deadline_str=predicted_deadline.strftime("%d.%m.%Y %H:%M")
+        if predicted_deadline
+        else None,
     )
 
 
@@ -829,8 +843,56 @@ def api_override() -> flask.Response:
     )
 
 
+def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
+    """Predict future pool temperature considering cooling and scheduled heating.
+
+    Returns a list of {time, temp} entries for each future hour.
+    """
+    tz = ZoneInfo("Europe/Helsinki")
+    now_local = datetime.datetime.now(tz)
+    now_hour = now_local.replace(minute=0, second=0, microsecond=0)
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+    heating_rate = _heating_rate()
+
+    current = temperature_history[-1]["current_temp"] if temperature_history else 34.0
+    predictions = []
+
+    # Predict for each future hour we have prices for
+    for time_key in sorted(hourly_prices):
+        dt = datetime.datetime.fromisoformat(time_key)
+        if dt < now_hour:
+            continue
+        hours_ahead = (dt - now_hour).total_seconds() / 3600
+        if hours_ahead > 48:  # noqa: PLR2004
+            break
+
+        # Simulate: for each hour, apply cooling then heating if scheduled
+        temp = current
+        for h in range(int(hours_ahead) + 1):
+            step_dt = now_hour + datetime.timedelta(hours=h)
+            step_key = step_dt.isoformat()
+            # Cool for one hour
+            if h > 0:
+                drop = cooling_k * (temp - outside)
+                temp -= drop
+            # Heat if scheduled
+            if step_key in heating_schedule:
+                temp += heating_rate
+                temp = min(temp, float(temp_high))
+
+        predictions.append(
+            {
+                "time": dt.astimezone(datetime.UTC).isoformat(),
+                "temp": round(temp, 1),
+            }
+        )
+
+    return predictions
+
+
 @APP.route("/api/temperatures")
-def api_temperatures() -> flask.Response:
+def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
     """Return temperature history and future price schedule as JSON."""
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     temp_low = int(os.getenv("TEMP_LOW", "0"))
@@ -849,6 +911,20 @@ def api_temperatures() -> flask.Response:
                 "heating": time_key in heating_schedule,
             }
         )
+
+    temp_min = float(os.getenv("TEMP_MIN", "34"))
+    current_temp = (
+        temperature_history[-1]["current_temp"] if temperature_history else None
+    )
+    outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+    predicted_deadline = None
+    if current_temp is not None:
+        deadline_hours = predict_time_to_temp(temp_min, current_temp, outside)
+        if deadline_hours > 0:
+            predicted_deadline = (
+                datetime.datetime.now(tz=datetime.UTC)
+                + datetime.timedelta(hours=deadline_hours)
+            ).isoformat()
 
     # All prices (past + future) for chart overlay
     all_prices = [
@@ -869,7 +945,12 @@ def api_temperatures() -> flask.Response:
             "prices": all_prices,
             "temp_high": temp_high,
             "temp_low": temp_low,
+            "temp_min": temp_min,
             "outside_temp": latest_outside_temp,
+            "cooling_k": cooling_k,
+            "predicted_deadline": predicted_deadline,
+            "predicted_temps": _predict_future_temps(),
+            "prices": all_prices,
         }
     )
 
@@ -933,6 +1014,16 @@ def _handle_telegram_status(chat_id: str) -> None:
             lines.append(
                 f"\u26a0\ufe0f Manual override until"
                 f" {manual_override_endtime.astimezone(tz).strftime('%H:%M')}"
+            )
+        outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+        temp_min = float(os.getenv("TEMP_MIN", "34"))
+        dh = predict_time_to_temp(temp_min, pool["current_temp"], outside)
+        if dh > 0:
+            deadline = datetime.datetime.now(
+                ZoneInfo("Europe/Helsinki")
+            ) + datetime.timedelta(hours=dh)
+            lines.append(
+                f"\u23f0 Reaches {temp_min}\u00b0C at ~{deadline.strftime('%H:%M')}"
             )
         send_telegram("\n".join(lines), chat_id=chat_id)
     else:

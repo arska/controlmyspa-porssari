@@ -1482,6 +1482,51 @@ class TestCoolingModel:
         assert hours_cold < hours_warm
 
 
+class TestEnhancedAPI:
+    """Tests for enhanced /api/temperatures response."""
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_api_returns_predicted_temps(self, client):
+        """API returns predicted future temperature curve."""
+        tz = ZoneInfo("Europe/Helsinki")
+        now = datetime.datetime.now(tz=datetime.UTC)
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 36.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
+        now_local = datetime.datetime.now(tz)
+        future_hour = (now_local + datetime.timedelta(hours=1)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.hourly_prices = {future_hour.isoformat(): 0.05}
+        app_module.heating_schedule = set()
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert "predicted_temps" in data
+        assert "cooling_k" in data
+        assert "temp_min" in data
+        assert "predicted_deadline" in data
+        assert "prices" in data
+        assert data["cooling_k"] == pytest.approx(0.006)
+        assert data["temp_min"] == 34
+        assert len(data["predicted_temps"]) > 0
+        assert len(data["prices"]) > 0
+
+
 class TestCalculateSchedule:
     """Tests for cooling-rate-based schedule calculation."""
 
