@@ -626,9 +626,19 @@ def status() -> str:
             ZoneInfo("Europe/Helsinki")
         ) + datetime.timedelta(minutes=heat_estimate_minutes)
 
+    # Filter prices to future hours only for the template
+    tz = ZoneInfo("Europe/Helsinki")
+    now_local = datetime.datetime.now(tz)
+    future_prices = [
+        (k, v)
+        for k, v in sorted(hourly_prices.items())
+        if datetime.datetime.fromisoformat(k)
+        >= now_local.replace(minute=0, second=0, microsecond=0)
+    ]
+
     return flask.render_template(
         "index.html",
-        hourly_prices=hourly_prices,
+        future_prices=future_prices,
         heating_schedule=heating_schedule,
         api=pool,
         manual_override_endtime=manual_override_endtime.astimezone(
