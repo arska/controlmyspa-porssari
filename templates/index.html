@@ -136,12 +136,12 @@
     </div>
 </div>
 
-{% if hourly_prices %}
+{% if future_prices %}
 <div class="card">
     <h2>Price Schedule</h2>
     <div class="hours-grid">
-        {% for key in hourly_prices.keys()|sort %}
-            {% set price_cents = hourly_prices[key] * 100 %}
+        {% for key, price in future_prices %}
+            {% set price_cents = price * 100 %}
             {% set is_heating = key in heating_schedule %}
             <div class="hour-cell {{ 'on' if is_heating else 'off' }}">
                 {{ key[11:16] }} {{ "%.1f"|format(price_cents) }}c
