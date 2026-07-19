@@ -31,7 +31,9 @@ spec:
             - name: TEMP_OVERRIDE
               value: "0"
             - name: HEATING_HOURS
-              value: "3"
+              value: "6"
+            - name: TEMP_MIN
+              value: "34"
             - name: SQLITE_PATH
               value: "/data/temperatures.db"
           envFrom:

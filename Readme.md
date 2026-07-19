@@ -4,10 +4,11 @@ Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](h
 
 ## Features
 
-- **Direct Nordpool pricing** — fetches spot prices from spot-hinta.fi, picks the cheapest N hours per day to heat to `TEMP_HIGH`, cools to `TEMP_LOW` otherwise
-- **Web GUI** — temperature graph, pool status, price schedule grid with heating hours highlighted, manual override controls
-- **Telegram bot** — remote status checks, override toggle, heat/cold commands, price schedule with cents/kWh
-- **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), recorded alongside spa temps for future cooling-rate analysis
+- **Physics-based heating** — estimates cooling rate from temperature history (Newton's law), predicts when the pool will drop below `TEMP_MIN`, and schedules heating during the cheapest hours before that deadline
+- **Direct Nordpool pricing** — fetches spot prices from [spot-hinta.fi](https://spot-hinta.fi) (free, no API key), selects cheapest hours within the predicted deadline
+- **Web GUI** — temperature graph with predicted future temps, price overlay, TEMP_MIN threshold, schedule grid, manual override controls
+- **Telegram bot** — remote status checks with predicted deadline, override toggle, heat/cold commands, price schedule
+- **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), used by the cooling model to predict heat loss
 - **Persistent history** — temperature readings stored in SQLite, surviving restarts
 - **Stale temperature alerts** — Telegram notifications when spa readings stop changing (gateway may be offline)
 
@@ -39,7 +40,9 @@ Configure using environment variables. For local development, put them in a `.en
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `TEMP_OVERRIDE` | `0` | If non-zero, overrides all price logic with this temperature |
-| `HEATING_HOURS` | `3` | Number of cheapest hours per day to heat to `TEMP_HIGH` |
+| `TEMP_MIN` | `34` | Minimum pool temperature — system heats to prevent dropping below this |
+| `HEATING_HOURS` | `6` | Max heating hours per 14:00-14:00 budget window (safety cap) |
+| `HEATING_RATE` | `2.5` | Heating rate in °C/h (measured from production data) |
 | `PRICE_INTERVAL` | `60` | Price aggregation interval in minutes (`15` or `60`) |
 | `WEATHER_LAT` | `60.45` | Latitude for weather lookup (default: Turku) |
 | `WEATHER_LON` | `22.27` | Longitude for weather lookup (default: Turku) |
@@ -99,8 +102,13 @@ GitHub Actions deploys to OpenShift on push to `main`. Required GitHub secrets:
 - `OPENSHIFT_TOKEN` — OpenShift service account token
 - `OPENSHIFT_SERVER` — OpenShift API server URL
 
+## History
+
+An earlier version used [Pörssäri.fi](https://porssari.fi) for price-based scheduling decisions. Pörssäri provided a simple on/off schedule per hour, but didn't allow optimizing across midnight boundaries or adapting to the pool's actual thermal state. The current version fetches Nordpool spot prices directly via spot-hinta.fi and uses a physics-based cooling model to schedule heating optimally.
+
 ## References
 
 - spot-hinta.fi API: https://api.spot-hinta.fi
 - ControlMySpa Python module: https://github.com/arska/controlmyspa
 - Open-Meteo weather API: https://open-meteo.com
+- Pörssäri.fi (no longer used): https://porssari.fi
