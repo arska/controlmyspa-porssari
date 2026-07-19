@@ -9,6 +9,7 @@ import collections
 import datetime
 import functools
 import logging
+import math
 import os
 import pathlib
 import sqlite3
@@ -39,8 +40,6 @@ DEFAULT_WEATHER_LON = "22.27"
 # the JSON (KeyError for a missing field, ValueError for bad/no JSON). Kept as a
 # named tuple because ruff 0.15.21's formatter mangles inline `except (...)`.
 WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
-# Average heating rate in °C per hour, measured empirically
-HEATING_RATE_PER_HOUR = 1.5
 SPOT_HINTA_API = "https://api.spot-hinta.fi"
 # Named tuples for except clauses — ruff 0.15.21 strips inline parentheses.
 PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
@@ -67,6 +66,11 @@ manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
 last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 STALE_ALERT_ACTIVE = False
+
+
+def _heating_rate() -> float:
+    """Return heating rate in °C/h from env or default."""
+    return float(os.getenv("HEATING_RATE", "2.5"))
 
 
 def send_telegram(message: str, *, chat_id: str | None = None) -> None:
@@ -451,50 +455,107 @@ def predict_time_to_temp(
     return (current_temp - target_temp) / (cooling_k * temp_diff)
 
 
-def calculate_schedule() -> None:
-    """Pick the cheapest future hours to heat, respecting the rolling 24h budget.
+def _heated_hours_in_window(tz: ZoneInfo, temp_high: int) -> set[str]:
+    """Count distinct hours heated in the current 14:00-14:00 budget window."""
+    now_local = datetime.datetime.now(tz)
+    window_start = now_local.replace(hour=14, minute=0, second=0, microsecond=0)
+    if now_local.hour < 14:  # noqa: PLR2004
+        window_start -= datetime.timedelta(days=1)
+    window_start_utc = window_start.astimezone(datetime.UTC)
+    heated: set[str] = set()
+    for entry in temperature_history:
+        entry_time = datetime.datetime.fromisoformat(entry["time"])
+        if entry_time >= window_start_utc and entry["desired_temp"] >= temp_high:
+            entry_local = entry_time.astimezone(tz)
+            heated.add(
+                entry_local.replace(minute=0, second=0, microsecond=0).isoformat()
+            )
+    return heated
 
-    Examines temperature_history to count hours already heated in the
-    trailing 24h window, then greedily picks the cheapest remaining
-    eligible hours up to HEATING_HOURS total.
+
+def _candidate_hours(
+    future_prices: dict[str, float],
+    now_local: datetime.datetime,
+    deadline_hours: float,
+    hours_needed: int,
+) -> dict[str, float]:
+    """Return price hours within the deadline, falling back to all future prices."""
+    if deadline_hours <= 0:
+        return future_prices
+    deadline_dt = now_local + datetime.timedelta(hours=deadline_hours)
+    within = {
+        k: v
+        for k, v in future_prices.items()
+        if datetime.datetime.fromisoformat(k) <= deadline_dt
+    }
+    return within if len(within) >= hours_needed else future_prices
+
+
+def calculate_schedule() -> None:
+    """Schedule heating based on cooling model and electricity prices.
+
+    Predicts when the pool will drop to TEMP_MIN, then picks the cheapest
+    hours before that deadline. Capped by HEATING_HOURS per 14:00-14:00
+    budget window.
     """
     global heating_schedule  # noqa: PLW0603
     tz = ZoneInfo("Europe/Helsinki")
     now_local = datetime.datetime.now(tz)
-    now_hour = now_local.replace(minute=0, second=0, microsecond=0)
-    heating_hours_budget = int(os.getenv("HEATING_HOURS", "3"))
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    temp_min = float(os.getenv("TEMP_MIN", "34"))
+    max_hours = int(os.getenv("HEATING_HOURS", "6"))
 
-    # Count distinct hours heated in the last 24h from temperature_history
-    cutoff_24h = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=24)
-    heated_hours: set[str] = set()
-    for entry in temperature_history:
-        entry_time = datetime.datetime.fromisoformat(entry["time"])
-        if entry_time >= cutoff_24h and entry["desired_temp"] >= temp_high:
-            entry_local = entry_time.astimezone(tz)
-            hour_key = entry_local.replace(
-                minute=0, second=0, microsecond=0
-            ).isoformat()
-            heated_hours.add(hour_key)
+    estimate_cooling_rate()
 
-    already_heated = len(heated_hours)
-    remaining_budget = max(0, heating_hours_budget - already_heated)
+    current_temp = (
+        temperature_history[-1]["current_temp"] if temperature_history else temp_min
+    )
+    outside_temp = latest_outside_temp if latest_outside_temp is not None else 15.0
+    deadline_hours = predict_time_to_temp(temp_min, current_temp, outside_temp)
+    hours_needed = math.ceil((temp_high - temp_min) / _heating_rate())
 
-    # Filter to future hours only and sort by price
     future_prices = {
         k: v
         for k, v in hourly_prices.items()
-        if datetime.datetime.fromisoformat(k) >= now_hour
+        if datetime.datetime.fromisoformat(k)
+        >= now_local.replace(minute=0, second=0, microsecond=0)
     }
-    sorted_hours = sorted(future_prices, key=future_prices.get)
 
-    # Pick cheapest hours up to remaining budget
-    heating_schedule = set(sorted_hours[:remaining_budget])
+    if not future_prices:
+        heating_schedule = set()
+        APP.logger.warning("no future prices available, clearing schedule")
+        return
+
+    candidates = _candidate_hours(
+        future_prices, now_local, deadline_hours, hours_needed
+    )
+    sorted_hours = sorted(candidates, key=candidates.get)
+
+    heated_in_window = _heated_hours_in_window(tz, temp_high)
+    remaining_budget = max(0, max_hours - len(heated_in_window))
+
+    pick_count = min(hours_needed, remaining_budget)
+    if pick_count == 0 and remaining_budget > 0 and current_temp < temp_high:
+        pick_count = 1
+
+    heating_schedule = set(sorted_hours[:pick_count])
+
+    if hours_needed > remaining_budget:
+        APP.logger.warning(
+            "budget exhausted: need %d hours but only %d remaining in window"
+            " (pool may drop below TEMP_MIN)",
+            hours_needed,
+            remaining_budget,
+        )
+
     APP.logger.info(
-        "schedule: %d hours planned (budget %d, used %d): %s",
+        "schedule: %d hours (need %d, budget %d/%d, deadline %.1fh, k=%.5f): %s",
         len(heating_schedule),
-        heating_hours_budget,
-        already_heated,
+        hours_needed,
+        len(heated_in_window),
+        max_hours,
+        deadline_hours,
+        cooling_k,
         sorted(heating_schedule),
     )
 
@@ -678,7 +739,7 @@ def status() -> str:
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     if pool and pool["current_temp"] < temp_high:
         degrees_remaining = temp_high - pool["current_temp"]
-        heat_estimate_minutes = int(degrees_remaining / HEATING_RATE_PER_HOUR * 60)
+        heat_estimate_minutes = int(degrees_remaining / _heating_rate() * 60)
         heat_estimate_time = datetime.datetime.now(
             ZoneInfo("Europe/Helsinki")
         ) + datetime.timedelta(minutes=heat_estimate_minutes)
@@ -865,7 +926,7 @@ def _handle_telegram_status(chat_id: str) -> None:
         ]
         if pool["current_temp"] < temp_high:
             remaining = temp_high - pool["current_temp"]
-            minutes = int(remaining / HEATING_RATE_PER_HOUR * 60)
+            minutes = int(remaining / _heating_rate() * 60)
             lines.append(f"\u23f1 Est. heating time: {format_duration(minutes)}")
         if override_active:
             tz = ZoneInfo("Europe/Helsinki")
