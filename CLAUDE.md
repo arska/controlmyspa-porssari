@@ -10,7 +10,8 @@ Nordpool electricity-price-based temperature control for Balboa ControlMySpa hot
 
 Single-file Flask app (`app.py`). Temperature history is persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
 - `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi
-- `heating_schedule` — set of ISO datetime keys for hours to heat (cheapest N hours)
+- `heating_schedule` — set of ISO datetime keys for hours to heat (determined by cooling model)
+- `cooling_k` — estimated cooling constant (Newton's law), updated from temperature history
 - `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=999)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; deque is backfilled from the last 48h on startup.
 - `manual_override_endtime` — datetime for manual override expiry
 - `latest_outside_temp` — most recent outside air temperature (°C), refreshed hourly
@@ -18,9 +19,9 @@ Single-file Flask app (`app.py`). Temperature history is persisted to SQLite (op
 
 Background jobs via APScheduler:
 - `update_prices()` (every 15 min) — fetches spot prices from spot-hinta.fi, aggregates to PRICE_INTERVAL-minute slots, then calls `calculate_schedule()`
-- `calculate_schedule()` — picks the cheapest HEATING_HOURS future hours and stores them in `heating_schedule`
+- `calculate_schedule()` — estimates cooling rate, predicts when pool hits TEMP_MIN, picks cheapest hours before that deadline (capped by HEATING_HOURS per 14:00-14:00 window)
 - `control()` (every 15 min) — sets spa temperature via ControlMySpa API based on current hour's `heating_schedule` membership
-- `update_weather()` (hourly) — fetches outside air temperature from Open-Meteo for the configured location (default 20900 Turku). Recorded alongside spa temps to later model temperature-dependent cooling and optimize heating duration.
+- `update_weather()` (hourly) — fetches outside air temperature from Open-Meteo for the configured location (default 20900 Turku). Used by the cooling model to predict heat loss rate.
 
 ## Routes
 
@@ -37,7 +38,9 @@ CONTROLMYSPA_PASS    # Balboa account password
 TEMP_HIGH=37         # Temperature during cheap hours
 TEMP_LOW=27          # Temperature during expensive hours
 TEMP_OVERRIDE=0      # If non-zero, overrides all logic with this temp
-HEATING_HOURS=3      # Number of cheapest hours per day to heat to TEMP_HIGH
+TEMP_MIN=34          # Minimum pool temperature — system heats to prevent dropping below this
+HEATING_HOURS=6      # Max heating hours per 14:00-14:00 window (safety cap)
+HEATING_RATE=2.5     # Heating rate in °C/h (measured from production data)
 PRICE_INTERVAL=60    # Aggregation interval in minutes (15 or 60)
 WEATHER_LAT=60.45    # Latitude for outside-temperature lookup (default: 20900 Turku)
 WEATHER_LON=22.27    # Longitude for outside-temperature lookup (default: 20900 Turku)

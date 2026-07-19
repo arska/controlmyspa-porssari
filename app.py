@@ -950,7 +950,6 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
             "cooling_k": cooling_k,
             "predicted_deadline": predicted_deadline,
             "predicted_temps": _predict_future_temps(),
-            "prices": all_prices,
         }
     )
 
