@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Porssari controlmyspa</title>
+    <title>ControlMySpa</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
     <script src="https://cdn.jsdelivr.net/npm/luxon@3/build/global/luxon.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon@1"></script>
@@ -93,7 +93,7 @@
     </style>
 </head>
 <body>
-<h1>Porssari ControlMySpa</h1>
+<h1>ControlMySpa</h1>
 
 <div class="card">
     <h2>Pool Status</h2>
@@ -125,10 +125,10 @@
             <span class="override-status active">Active until {{ manual_override_endtime.strftime('%d.%m.%Y %H:%M') }}</span>
             <button class="btn btn-disable" onclick="toggleOverride('disable')">Disable Override</button>
         {% else %}
-            <span class="override-status">Inactive — Porssari controls the temperature</span>
+            <span class="override-status">Inactive — automatic price-based control</span>
             <button class="btn btn-heat" onclick="toggleOverride('heat')">Keep the pool heated to {{ temp_heat }}°C for 12h</button>
             <button class="btn btn-cold" onclick="toggleOverride('cold')">Keep the pool at {{ temp_low }}°C for 24h</button>
-            <button class="btn btn-enable" onclick="toggleOverride('enable')">Disable Porssari control for 12h</button>
+            <button class="btn btn-enable" onclick="toggleOverride('enable')">Disable automatic control for 12h</button>
         {% endif %}
         {% if heat_estimate_minutes is not none %}
             <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min ({{ heat_estimate_time.strftime('%d.%m.%Y %H:%M') }})</span>
@@ -136,13 +136,15 @@
     </div>
 </div>
 
-{% if porssari_config %}
+{% if hourly_prices %}
 <div class="card">
-    <h2>Porssari Schedule</h2>
+    <h2>Price Schedule</h2>
     <div class="hours-grid">
-        {% for key, value in porssari_config["Channel1"].items() %}
-            <div class="hour-cell {{ 'on' if value == '1' else 'off' }}{{ ' current' if key == current_hour|string else '' }}">
-                {{ key }}h
+        {% for key in hourly_prices.keys()|sort %}
+            {% set price_cents = hourly_prices[key] * 100 %}
+            {% set is_heating = key in heating_schedule %}
+            <div class="hour-cell {{ 'on' if is_heating else 'off' }}">
+                {{ key[11:16] }} {{ "%.1f"|format(price_cents) }}c
             </div>
         {% endfor %}
     </div>
@@ -188,7 +190,7 @@
             }));
             const future = data.future.map(p => ({
                 time: new Date(p.time),
-                target: p.target_temp
+                heating: p.heating
             }));
 
             new Chart(document.getElementById('tempChart'), {
@@ -223,8 +225,8 @@
                             fill: false
                         },
                         {
-                            label: 'Porssari schedule',
-                            data: future.map(p => ({x: p.time, y: p.target})),
+                            label: 'Heating schedule',
+                            data: future.filter(p => p.heating).map(p => ({x: p.time, y: data.temp_high})),
                             borderColor: '#2ecc71',
                             borderDash: [5, 5],
                             tension: 0,

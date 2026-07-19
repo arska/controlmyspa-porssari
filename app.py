@@ -625,8 +625,8 @@ def status() -> str:
 
     return flask.render_template(
         "index.html",
+        hourly_prices=hourly_prices,
         heating_schedule=heating_schedule,
-        current_hour=datetime.datetime.now(ZoneInfo("Europe/Helsinki")).hour,
         api=pool,
         manual_override_endtime=manual_override_endtime.astimezone(
             ZoneInfo("Europe/Helsinki")
@@ -700,14 +700,29 @@ def api_override() -> flask.Response:
 
 @APP.route("/api/temperatures")
 def api_temperatures() -> flask.Response:
-    """Return temperature history and future heating schedule as JSON."""
+    """Return temperature history and future price schedule as JSON."""
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     temp_low = int(os.getenv("TEMP_LOW", "0"))
+
+    # Future schedule from prices
+    future = []
+    tz = ZoneInfo("Europe/Helsinki")
+    for time_key, price in sorted(hourly_prices.items()):
+        dt = datetime.datetime.fromisoformat(time_key)
+        if dt < datetime.datetime.now(tz):
+            continue
+        future.append(
+            {
+                "time": dt.astimezone(datetime.UTC).isoformat(),
+                "price": price,
+                "heating": time_key in heating_schedule,
+            }
+        )
 
     return flask.jsonify(
         {
             "history": list(temperature_history),
-            "future": [],
+            "future": future,
             "temp_high": temp_high,
             "temp_low": temp_low,
             "outside_temp": latest_outside_temp,
@@ -835,17 +850,22 @@ def _handle_telegram_cold(chat_id: str) -> None:  # noqa: ARG001  # pylint: disa
 
 
 def _handle_telegram_schedule(chat_id: str) -> None:
-    """Handle /schedule command."""
-    if not heating_schedule:
-        send_telegram("\u274c No schedule available", chat_id=chat_id)
+    """Handle /schedule command — show prices with heating hours marked."""
+    if not hourly_prices:
+        send_telegram("\u274c No price data available", chat_id=chat_id)
         return
 
-    temp_high = int(os.getenv("TEMP_HIGH", "0"))
     tz = ZoneInfo("Europe/Helsinki")
-    lines = ["\U0001f4cb Heating schedule:"]
-    for iso_key in sorted(heating_schedule):
-        dt = datetime.datetime.fromisoformat(iso_key).astimezone(tz)
-        lines.append(f"{dt.strftime('%d.%m %H:%M')} \U0001f525 {temp_high}\u00b0C")
+    now_local = datetime.datetime.now(tz)
+    lines = ["\U0001f4cb Electricity prices (c/kWh):"]
+    for time_key in sorted(hourly_prices):
+        dt = datetime.datetime.fromisoformat(time_key)
+        if dt < now_local:
+            continue
+        price_cents = hourly_prices[time_key] * 100
+        heating = time_key in heating_schedule
+        marker = "\U0001f525" if heating else "  "
+        lines.append(f"{dt.strftime('%H:%M')} {marker} {price_cents:.1f}c")
     send_telegram("\n".join(lines), chat_id=chat_id)
 
 

@@ -899,13 +899,13 @@ class TestTelegramWebhook:
     )
     @patch("app.send_telegram")
     def test_schedule_command_no_config(self, mock_tg, client):
-        """Bot responds to /schedule with error when no config."""
+        """Bot responds to /schedule with error when no price data available."""
         client.post(
             "/telegram/tok",
             json={"message": {"chat": {"id": 123}, "text": "/schedule"}},
         )
         mock_tg.assert_called_once()
-        assert "no schedule" in mock_tg.call_args[0][0].lower()
+        assert "no price data" in mock_tg.call_args[0][0].lower()
 
     @patch.dict(
         "os.environ",
@@ -1006,12 +1006,14 @@ class TestTelegramWebhook:
     )
     @patch("app.send_telegram")
     def test_schedule_command(self, mock_tg, client):
-        """Bot responds to /schedule with heating schedule."""
+        """Bot responds to /schedule with price-based schedule."""
         tz = ZoneInfo("Europe/Helsinki")
-        current_hour = datetime.datetime.now(tz).replace(
+        future_hour = (datetime.datetime.now(tz) + datetime.timedelta(hours=1)).replace(
             minute=0, second=0, microsecond=0
         )
-        app_module.heating_schedule = {current_hour.isoformat()}
+        key = future_hour.isoformat()
+        app_module.hourly_prices = {key: 0.05}
+        app_module.heating_schedule = {key}
         client.post(
             "/telegram/tok",
             json={"message": {"chat": {"id": 123}, "text": "/schedule"}},
@@ -1386,6 +1388,48 @@ class TestUpdatePrices:
         assert len(rows) == 1
         assert rows[0] == ("2026-07-18T10:00:00+03:00", pytest.approx(0.02))
         app_module.db_conn.close()
+
+
+class TestPriceScheduleAPI:
+    """Tests for price-based schedule in API and Telegram."""
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    def test_api_temperatures_returns_prices(self, client):
+        """GET /api/temperatures returns price schedule with heating flag."""
+        tz = ZoneInfo("Europe/Helsinki")
+        future_hour = (datetime.datetime.now(tz) + datetime.timedelta(hours=1)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        key = future_hour.isoformat()
+        app_module.hourly_prices = {key: 0.05}
+        app_module.heating_schedule = {key}
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert len(data["future"]) == 1
+        assert data["future"][0]["price"] == pytest.approx(0.05)
+        assert data["future"][0]["heating"] is True
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123"},
+    )
+    @patch("app.send_telegram")
+    def test_telegram_schedule_shows_prices(self, mock_tg, client):
+        """Bot /schedule shows prices with heating hours marked."""
+        tz = ZoneInfo("Europe/Helsinki")
+        future_hour = (datetime.datetime.now(tz) + datetime.timedelta(hours=1)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        key = future_hour.isoformat()
+        app_module.hourly_prices = {key: 0.045}
+        app_module.heating_schedule = {key}
+        client.post(
+            "/telegram/tok",
+            json={"message": {"chat": {"id": 123}, "text": "/schedule"}},
+        )
+        mock_tg.assert_called_once()
+        reply = mock_tg.call_args[0][0]
+        assert "0.045" in reply or "4.5" in reply
 
 
 class TestCalculateSchedule:
