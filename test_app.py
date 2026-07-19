@@ -27,6 +27,8 @@ def _reset_state():
     app_module.STALE_ALERT_ACTIVE = False
     app_module.latest_outside_temp = None
     app_module.db_conn = None
+    app_module.hourly_prices = {}
+    app_module.heating_schedule = set()
     yield
 
 
@@ -1389,3 +1391,72 @@ class TestSQLitePersistence:
             app_module.set_temp(37)
 
         assert len(app_module.temperature_history) == 1
+
+
+class TestUpdatePrices:
+    """Tests for spot-hinta.fi price fetching."""
+
+    @patch("app.requests.get")
+    def test_fetches_and_aggregates_hourly(self, mock_get):
+        """update_prices() averages 15-min prices to hourly."""
+        # 4 quarter-hour entries for hour 14:00
+        today_data = [
+            {"DateTime": "2026-07-18T14:00:00+03:00", "PriceWithTax": 0.04},
+            {"DateTime": "2026-07-18T14:15:00+03:00", "PriceWithTax": 0.06},
+            {"DateTime": "2026-07-18T14:30:00+03:00", "PriceWithTax": 0.08},
+            {"DateTime": "2026-07-18T14:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        assert "2026-07-18T14:00:00+03:00" in app_module.hourly_prices
+        assert app_module.hourly_prices["2026-07-18T14:00:00+03:00"] == pytest.approx(
+            0.05
+        )
+
+    @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
+    def test_keeps_old_prices_on_failure(self, mock_get):
+        """update_prices() keeps previous data on API failure."""
+        app_module.hourly_prices = {"2026-07-18T10:00:00+03:00": 0.03}
+        with app_module.APP.app_context():
+            app_module.update_prices()
+        assert app_module.hourly_prices == {"2026-07-18T10:00:00+03:00": 0.03}
+
+    @patch("app.requests.get")
+    def test_persists_prices_to_sqlite(self, mock_get, tmp_path, monkeypatch):
+        """update_prices() writes prices to price_history table."""
+        monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        today_data = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        rows = app_module.db_conn.execute(
+            "SELECT time, price FROM price_history"
+        ).fetchall()
+        assert len(rows) == 1
+        assert rows[0] == ("2026-07-18T10:00:00+03:00", pytest.approx(0.02))
+        app_module.db_conn.close()

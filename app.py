@@ -41,7 +41,10 @@ DEFAULT_WEATHER_LON = "22.27"
 WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 # Average heating rate in °C per hour, measured empirically
 HEATING_RATE_PER_HOUR = 1.5
+SPOT_HINTA_API = "https://api.spot-hinta.fi"
 porssari_config = {}
+hourly_prices: dict[str, float] = {}
+heating_schedule: set[str] = set()
 # Generous in-memory buffer; SQLite is the source of truth for persistence
 temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 
@@ -253,6 +256,11 @@ def init_db() -> None:
     db_conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_readings_time ON temperature_readings(time)"
     )
+    db_conn.execute(
+        "CREATE TABLE IF NOT EXISTS price_history ("
+        "time TEXT PRIMARY KEY, "
+        "price REAL NOT NULL)"
+    )
     db_conn.commit()
 
     # Backfill the in-memory deque from the last 48h
@@ -420,6 +428,77 @@ def update_weather() -> None:
             APP.logger.info("got outside temperature: %s°C", latest_outside_temp)
         except WEATHER_FETCH_ERRORS:
             APP.logger.exception("failed to fetch outside temperature")
+
+
+def _fetch_price_entries() -> list[dict]:
+    """Fetch raw 15-min price entries from spot-hinta.fi /Today and /DayForward."""
+    all_entries: list[dict] = []
+    for endpoint in ("/Today", "/DayForward"):
+        try:
+            resp = requests.get(f"{SPOT_HINTA_API}{endpoint}", timeout=10)
+            resp.raise_for_status()
+            all_entries.extend(resp.json())
+        except requests.exceptions.RequestException, ValueError:
+            APP.logger.exception("failed to fetch %s", endpoint)
+    return all_entries
+
+
+def _aggregate_prices(all_entries: list[dict], interval: int) -> dict[str, float]:
+    """Group raw entries by interval boundary and average the prices."""
+    slots_per_interval = interval // 15
+    groups: dict[str, list[float]] = collections.defaultdict(list)
+    for entry in all_entries:
+        dt = datetime.datetime.fromisoformat(entry["DateTime"])
+        minute = (dt.minute // interval) * interval
+        interval_start = dt.replace(minute=minute, second=0, microsecond=0)
+        groups[interval_start.isoformat()].append(entry["PriceWithTax"])
+    return {
+        time_key: sum(prices) / len(prices)
+        for time_key, prices in groups.items()
+        if len(prices) == slots_per_interval
+    }
+
+
+def _persist_prices(new_prices: dict[str, float]) -> None:
+    """Write aggregated prices to the price_history SQLite table."""
+    if db_conn is None:
+        return
+    with db_lock:
+        for time_key, price in new_prices.items():
+            db_conn.execute(
+                "INSERT OR REPLACE INTO price_history (time, price) VALUES (?, ?)",
+                (time_key, price),
+            )
+        db_conn.commit()
+
+
+def update_prices() -> None:
+    """Fetch electricity prices from spot-hinta.fi and aggregate to hourly.
+
+    Calls /Today and /DayForward endpoints which return 15-min interval prices.
+    Averages to hourly (or PRICE_INTERVAL) and stores in hourly_prices dict.
+    On failure, previous prices are kept.
+    """
+    global hourly_prices  # noqa: PLW0603
+    with (
+        sentry_sdk.start_transaction(op="task", name="Update Prices"),
+        APP.app_context(),
+    ):
+        try:
+            interval = int(os.getenv("PRICE_INTERVAL", "60"))
+            all_entries = _fetch_price_entries()
+            if not all_entries:
+                APP.logger.warning("no price data received from spot-hinta.fi")
+                return
+            new_prices = _aggregate_prices(all_entries, interval)
+            if new_prices:
+                hourly_prices = new_prices
+                APP.logger.info(
+                    "got %d price intervals from spot-hinta.fi", len(new_prices)
+                )
+                _persist_prices(new_prices)
+        except requests.exceptions.RequestException, KeyError, ValueError:
+            APP.logger.exception("failed to update prices")
 
 
 def control(*, skip_override_detection: bool = False) -> None:
