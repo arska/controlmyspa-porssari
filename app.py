@@ -331,8 +331,8 @@ def _price_margin(hour: int) -> float:
     """
     night = float(os.getenv("PRICE_MARGIN_NIGHT", "0")) / 100  # c/kWh → EUR/kWh
     day = float(os.getenv("PRICE_MARGIN_DAY", "0")) / 100
-    night_start = 22  # noqa: PLR2004
-    night_end = 7  # noqa: PLR2004
+    night_start = 22
+    night_end = 7
     if hour >= night_start or hour < night_end:
         return night
     return day
@@ -967,7 +967,6 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
             "cooling_k": cooling_k,
             "predicted_deadline": predicted_deadline,
             "predicted_temps": _predict_future_temps(),
-            "prices": all_prices,
         }
     )
 
