@@ -138,14 +138,14 @@ wheels = [
 
 [[package]]
 name = "controlmyspa"
-version = "4.0.3"
+version = "4.0.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e9/52/73bca38a87b8c53f73a6468a18d35915a5eb1f7e3f2ec91ba8cd578b99ae/controlmyspa-4.0.3.tar.gz", hash = "sha256:7008fe88a46895ba44a737237c1994d9e3adb1a97ca28e717d0804a7653f6918", size = 17727, upload-time = "2026-05-20T12:29:44.245Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/38/f1/e76d413bd7e7609a87498c2d908716a3e2e0a55e75824ba40972a80165e8/controlmyspa-4.0.4.tar.gz", hash = "sha256:d229ed511f40acdb394029431065c1ae7e3876a9f935c0141c4d2cdc881dc8e9", size = 17559, upload-time = "2026-07-22T20:20:58.349Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/88/2d/4ce742464e360768c28a8c511aaf3a70a2158016debeb7439a1e5b3c54c1/controlmyspa-4.0.3-py3-none-any.whl", hash = "sha256:6488578d60f1484e0377bd1ac5386ac981001ce1e9adf626fdcb1059010fe905", size = 8532, upload-time = "2026-05-20T12:29:43.059Z" },
+    { url = "https://files.pythonhosted.org/packages/d9/0b/d9fd2afb0a4cd6bc8f3a80b8b4080e1a549ec1ff52065e3a0baade88399b/controlmyspa-4.0.4-py3-none-any.whl", hash = "sha256:389960d883c52fe3efbbf0245d0687c4b53c70d65ffbb533309ca3abd73d0eca", size = 8382, upload-time = "2026-07-22T20:20:57.166Z" },
 ]
 
 [[package]]
