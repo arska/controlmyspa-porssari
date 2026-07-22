@@ -322,8 +322,24 @@ def _fetch_price_entries() -> list[dict]:
     return all_entries
 
 
+def _price_margin(hour: int) -> float:
+    """Return the price margin (EUR/kWh) for the given hour of day.
+
+    Covers transmission costs, retailer margin, etc. Configurable via
+    PRICE_MARGIN_NIGHT (22:00-07:00) and PRICE_MARGIN_DAY (07:00-22:00).
+    Default: 0 (no margin).
+    """
+    night = float(os.getenv("PRICE_MARGIN_NIGHT", "0")) / 100  # c/kWh → EUR/kWh
+    day = float(os.getenv("PRICE_MARGIN_DAY", "0")) / 100
+    night_start = 22  # noqa: PLR2004
+    night_end = 7  # noqa: PLR2004
+    if hour >= night_start or hour < night_end:
+        return night
+    return day
+
+
 def _aggregate_prices(all_entries: list[dict], interval: int) -> dict[str, float]:
-    """Group raw entries by interval boundary and average the prices."""
+    """Group raw entries by interval boundary, average, and add margin."""
     slots_per_interval = interval // 15
     groups: dict[str, list[float]] = collections.defaultdict(list)
     for entry in all_entries:
@@ -331,11 +347,12 @@ def _aggregate_prices(all_entries: list[dict], interval: int) -> dict[str, float
         minute = (dt.minute // interval) * interval
         interval_start = dt.replace(minute=minute, second=0, microsecond=0)
         groups[interval_start.isoformat()].append(entry["PriceWithTax"])
-    return {
-        time_key: sum(prices) / len(prices)
-        for time_key, prices in groups.items()
-        if len(prices) == slots_per_interval
-    }
+    result = {}
+    for time_key, prices in groups.items():
+        if len(prices) == slots_per_interval:
+            hour = datetime.datetime.fromisoformat(time_key).hour
+            result[time_key] = sum(prices) / len(prices) + _price_margin(hour)
+    return result
 
 
 def _persist_prices(new_prices: dict[str, float]) -> None:

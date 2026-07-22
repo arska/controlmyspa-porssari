@@ -1390,6 +1390,42 @@ class TestUpdatePrices:
         assert rows[0] == ("2026-07-18T10:00:00+03:00", pytest.approx(0.02))
         app_module.db_conn.close()
 
+    @patch.dict(
+        "os.environ", {"PRICE_MARGIN_NIGHT": "4.02", "PRICE_MARGIN_DAY": "4.91"}
+    )
+    @patch("app.requests.get")
+    def test_applies_price_margin(self, mock_get):
+        """update_prices() adds time-of-day margin to spot prices."""
+        today_data = [
+            {"DateTime": "2026-07-18T03:00:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T03:15:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T03:30:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T03:45:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T14:00:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T14:15:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T14:30:00+03:00", "PriceWithTax": 0.01},
+            {"DateTime": "2026-07-18T14:45:00+03:00", "PriceWithTax": 0.01},
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        # Night hour (03:00): 0.01 + 4.02/100 = 0.0502
+        assert app_module.hourly_prices["2026-07-18T03:00:00+03:00"] == pytest.approx(
+            0.0502
+        )
+        # Day hour (14:00): 0.01 + 4.91/100 = 0.0591
+        assert app_module.hourly_prices["2026-07-18T14:00:00+03:00"] == pytest.approx(
+            0.0591
+        )
+
 
 class TestPriceScheduleAPI:
     """Tests for price-based schedule in API and Telegram."""
