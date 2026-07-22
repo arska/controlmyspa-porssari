@@ -717,10 +717,23 @@ def api_temperatures() -> flask.Response:
             }
         )
 
+    # All prices (past + future) for chart overlay
+    all_prices = [
+        {
+            "time": datetime.datetime.fromisoformat(k)
+            .astimezone(datetime.UTC)
+            .isoformat(),
+            "price": v,
+            "heating": k in heating_schedule,
+        }
+        for k, v in sorted(hourly_prices.items())
+    ]
+
     return flask.jsonify(
         {
             "history": list(temperature_history),
             "future": future,
+            "prices": all_prices,
             "temp_high": temp_high,
             "temp_low": temp_low,
             "outside_temp": latest_outside_temp,

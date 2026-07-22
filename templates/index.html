@@ -188,8 +188,9 @@
                 desired: p.desired_temp,
                 outside: p.outside_temp
             }));
-            const future = data.future.map(p => ({
+            const prices = (data.prices || []).map(p => ({
                 time: new Date(p.time),
+                price: p.price,
                 heating: p.heating
             }));
 
@@ -225,14 +226,16 @@
                             fill: false
                         },
                         {
-                            label: 'Heating schedule',
-                            data: future.filter(p => p.heating).map(p => ({x: p.time, y: data.temp_high})),
-                            borderColor: '#2ecc71',
-                            borderDash: [5, 5],
-                            tension: 0,
-                            pointRadius: 3,
-                            stepped: true,
-                            fill: false
+                            label: 'Price (c/kWh)',
+                            type: 'bar',
+                            data: prices.map(p => ({x: p.time, y: p.price * 100})),
+                            backgroundColor: prices.map(p =>
+                                p.heating ? 'rgba(46, 204, 113, 0.5)' : 'rgba(149, 165, 166, 0.3)'
+                            ),
+                            yAxisID: 'yPrice',
+                            barPercentage: 1.0,
+                            categoryPercentage: 1.0,
+                            order: 10
                         }
                     ]
                 },
@@ -249,6 +252,12 @@
                             title: { display: true, text: '°C' },
                             suggestedMin: data.temp_low - 2,
                             suggestedMax: data.temp_high + 2
+                        },
+                        yPrice: {
+                            position: 'right',
+                            title: { display: true, text: 'c/kWh' },
+                            grid: { drawOnChartArea: false },
+                            beginAtZero: true
                         }
                     }
                 }
