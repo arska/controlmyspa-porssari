@@ -368,6 +368,13 @@ def update_prices() -> None:
                 )
                 _persist_prices(new_prices)
                 calculate_schedule()
+                # Run control immediately after schedule update,
+                # especially important on startup
+                scheduler.add_job(
+                    control,
+                    "date",
+                    run_date=datetime.datetime.now(tz=datetime.UTC),
+                )
         except PRICE_UPDATE_ERRORS:
             APP.logger.exception("failed to update prices")
 
