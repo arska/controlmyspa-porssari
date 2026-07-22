@@ -29,6 +29,7 @@ def _reset_state():
     app_module.hourly_prices = {}
     app_module.heating_schedule = set()
     app_module.cooling_k = app_module.DEFAULT_COOLING_K
+    app_module.weather_forecast = {}
     yield
 
 
@@ -518,16 +519,24 @@ class TestUpdateWeather:
     """Tests for the update_weather() function."""
 
     @patch("app.requests.get")
-    def test_fetches_outside_temp(self, mock_get):
-        """Successfully parses Open-Meteo response and stores outside temp."""
+    def test_fetches_outside_temp_and_forecast(self, mock_get):
+        """Successfully parses Open-Meteo response with current + hourly forecast."""
         mock_response = MagicMock()
-        mock_response.json.return_value = {"current": {"temperature_2m": 12.3}}
+        mock_response.json.return_value = {
+            "current": {"temperature_2m": 12.3},
+            "hourly": {
+                "time": ["2026-07-22T21:00", "2026-07-22T22:00"],
+                "temperature_2m": [12.0, 11.5],
+            },
+        }
         mock_get.return_value = mock_response
 
         with app_module.APP.app_context():
             app_module.update_weather()
 
         assert app_module.latest_outside_temp == 12.3
+        assert len(app_module.weather_forecast) == 2
+        assert app_module.weather_forecast["2026-07-22T21:00"] == 12.0
 
     @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
     def test_keeps_last_value_on_error(self, mock_get):
@@ -1499,22 +1508,26 @@ class TestCoolingModel:
     def test_predict_time_to_temp(self):
         """predict_time_to_temp() calculates hours until target temp."""
         app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
         # Pool 37°C, outside 20°C, target 34°C
-        # hours = (37 - 34) / (0.006 * (37 - 20)) = 3 / 0.102 ≈ 29.4
-        hours = app_module.predict_time_to_temp(34.0, 37.0, 20.0)
-        assert hours == pytest.approx(29.4, abs=1.0)
+        # Iterative simulation gives ~33h (compounds cooling rate as pool cools)
+        hours = app_module.predict_time_to_temp(34.0, 37.0)
+        assert 25 < hours < 40
 
     def test_predict_time_to_temp_already_below(self):
         """predict_time_to_temp() returns 0 when pool is already at or below target."""
         app_module.cooling_k = 0.006
-        hours = app_module.predict_time_to_temp(34.0, 33.0, 20.0)
+        app_module.latest_outside_temp = 20.0
+        hours = app_module.predict_time_to_temp(34.0, 33.0)
         assert hours == 0.0
 
     def test_predict_time_to_temp_cold_outside(self):
         """predict_time_to_temp() returns shorter time with cold outside temp."""
         app_module.cooling_k = 0.006
-        hours_warm = app_module.predict_time_to_temp(34.0, 37.0, 20.0)
-        hours_cold = app_module.predict_time_to_temp(34.0, 37.0, 0.0)
+        app_module.latest_outside_temp = 20.0
+        hours_warm = app_module.predict_time_to_temp(34.0, 37.0)
+        app_module.latest_outside_temp = 0.0
+        hours_cold = app_module.predict_time_to_temp(34.0, 37.0)
         assert hours_cold < hours_warm
 
 

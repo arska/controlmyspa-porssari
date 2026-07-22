@@ -229,6 +229,15 @@
                             fill: false
                         },
                         {
+                            label: 'Forecast outside',
+                            data: (data.weather_forecast || []).map(p => ({x: new Date(p.time), y: p.temp})),
+                            borderColor: '#7f8c8d',
+                            borderDash: [5, 5],
+                            tension: 0.3,
+                            pointRadius: 0,
+                            fill: false
+                        },
+                        {
                             label: 'Predicted temp',
                             data: (data.predicted_temps || []).map(p => ({x: new Date(p.time), y: p.temp})),
                             borderColor: '#e74c3c',

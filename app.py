@@ -57,6 +57,9 @@ temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 # update_weather(). Recorded alongside spa temps to later model
 # temperature-dependent cooling. Mutable global, not a constant.
 latest_outside_temp = None  # pylint: disable=invalid-name
+# Hourly outside temperature forecast: ISO hour key → °C.
+# Populated by update_weather() from Open-Meteo's hourly forecast.
+weather_forecast: dict[str, float] = {}
 
 db_conn: sqlite3.Connection | None = None  # pylint: disable=invalid-name
 db_lock = threading.Lock()
@@ -276,14 +279,14 @@ def initialize() -> None:
 
 
 def update_weather() -> None:
-    """Fetch the current outside air temperature and cache it in memory.
+    """Fetch current outside temperature and hourly forecast.
 
     Uses the free, keyless Open-Meteo API for the configured location
     (WEATHER_LAT/WEATHER_LON, defaulting to 20900 Turku, Finland). On any
-    failure the previous value is kept so a transient outage doesn't wipe
-    the reading recorded with the next spa temperature sample.
+    failure the previous values are kept so a transient outage doesn't wipe
+    the readings.
     """
-    global latest_outside_temp  # noqa: PLW0603
+    global latest_outside_temp, weather_forecast  # noqa: PLW0603
     with (
         sentry_sdk.start_transaction(op="task", name="Update Weather"),
         APP.app_context(),
@@ -295,12 +298,24 @@ def update_weather() -> None:
                     "latitude": os.getenv("WEATHER_LAT", DEFAULT_WEATHER_LAT),
                     "longitude": os.getenv("WEATHER_LON", DEFAULT_WEATHER_LON),
                     "current": "temperature_2m",
+                    "hourly": "temperature_2m",
+                    "forecast_hours": 48,
                 },
                 timeout=10,
             )
             response.raise_for_status()
-            latest_outside_temp = response.json()["current"]["temperature_2m"]
-            APP.logger.info("got outside temperature: %s°C", latest_outside_temp)
+            data = response.json()
+            latest_outside_temp = data["current"]["temperature_2m"]
+            # Build hourly forecast dict
+            hourly = data.get("hourly", {})
+            times = hourly.get("time", [])
+            temps = hourly.get("temperature_2m", [])
+            weather_forecast = dict(zip(times, temps, strict=False))
+            APP.logger.info(
+                "got outside temperature: %s°C, %d forecast hours",
+                latest_outside_temp,
+                len(weather_forecast),
+            )
         except WEATHER_FETCH_ERRORS:
             APP.logger.exception("failed to fetch outside temperature")
 
@@ -405,6 +420,23 @@ def update_prices() -> None:
             APP.logger.exception("failed to update prices")
 
 
+def _outside_temp_at(dt: datetime.datetime) -> float:
+    """Look up forecast outside temperature for the given hour.
+
+    Falls back to latest_outside_temp, then 15.0°C default.
+    Open-Meteo returns keys like '2026-07-22T21:00' (no timezone),
+    so we format the lookup key accordingly.
+    """
+    # Open-Meteo forecast keys are naive UTC strings like "2026-07-22T21:00"
+    utc_dt = dt.astimezone(datetime.UTC)
+    key = utc_dt.strftime("%Y-%m-%dT%H:00")
+    if key in weather_forecast:
+        return weather_forecast[key]
+    if latest_outside_temp is not None:
+        return latest_outside_temp
+    return 15.0
+
+
 def _measure_cooling_period(
     history: list[dict], start_idx: int, end_idx: int, k_values: list[float]
 ) -> None:
@@ -476,20 +508,28 @@ def estimate_cooling_rate() -> float:
     return cooling_k
 
 
-def predict_time_to_temp(
-    target_temp: float, current_temp: float, outside_temp: float
-) -> float:
+def predict_time_to_temp(target_temp: float, current_temp: float) -> float:
     """Predict hours until pool drops from current_temp to target_temp.
 
-    Uses linear approximation of Newton's law of cooling.
+    Steps hour by hour using the weather forecast for each hour's outside
+    temperature. Falls back to latest_outside_temp if no forecast.
     Returns 0.0 if pool is already at or below target.
     """
     if current_temp <= target_temp:
         return 0.0
-    temp_diff = current_temp - outside_temp
-    if temp_diff <= 0:
-        return 0.0
-    return (current_temp - target_temp) / (cooling_k * temp_diff)
+    tz = ZoneInfo("Europe/Helsinki")
+    now = datetime.datetime.now(tz)
+    temp = current_temp
+    for h in range(200):  # max ~8 days
+        step_dt = now + datetime.timedelta(hours=h)
+        outside = _outside_temp_at(step_dt)
+        if temp - outside <= 0:
+            return 0.0
+        drop = cooling_k * (temp - outside)
+        temp -= drop
+        if temp <= target_temp:
+            return float(h + 1)
+    return float(200)
 
 
 def _heated_hours_in_window(tz: ZoneInfo, temp_high: int) -> set[str]:
@@ -547,8 +587,7 @@ def calculate_schedule() -> None:
     current_temp = (
         temperature_history[-1]["current_temp"] if temperature_history else temp_min
     )
-    outside_temp = latest_outside_temp if latest_outside_temp is not None else 15.0
-    deadline_hours = predict_time_to_temp(temp_min, current_temp, outside_temp)
+    deadline_hours = predict_time_to_temp(temp_min, current_temp)
     hours_needed = math.ceil((temp_high - temp_min) / _heating_rate())
 
     future_prices = {
@@ -794,8 +833,7 @@ def status() -> str:
     temp_min = float(os.getenv("TEMP_MIN", "34"))
     predicted_deadline = None
     if pool:
-        outside = latest_outside_temp if latest_outside_temp is not None else 15.0
-        dh = predict_time_to_temp(temp_min, pool["current_temp"], outside)
+        dh = predict_time_to_temp(temp_min, pool["current_temp"])
         if dh > 0:
             predicted_deadline = datetime.datetime.now(
                 ZoneInfo("Europe/Helsinki")
@@ -889,7 +927,6 @@ def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
     now_local = datetime.datetime.now(tz)
     now_hour = now_local.replace(minute=0, second=0, microsecond=0)
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    outside = latest_outside_temp if latest_outside_temp is not None else 15.0
     heating_rate = _heating_rate()
 
     current = temperature_history[-1]["current_temp"] if temperature_history else 34.0
@@ -909,8 +946,9 @@ def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
         for h in range(int(hours_ahead) + 1):
             step_dt = now_hour + datetime.timedelta(hours=h)
             step_key = step_dt.isoformat()
+            outside = _outside_temp_at(step_dt)
             # Cool for one hour
-            if h > 0:
+            if h > 0 and temp > outside:
                 drop = cooling_k * (temp - outside)
                 temp -= drop
             # Heat if scheduled
@@ -953,10 +991,9 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
     current_temp = (
         temperature_history[-1]["current_temp"] if temperature_history else None
     )
-    outside = latest_outside_temp if latest_outside_temp is not None else 15.0
     predicted_deadline = None
     if current_temp is not None:
-        deadline_hours = predict_time_to_temp(temp_min, current_temp, outside)
+        deadline_hours = predict_time_to_temp(temp_min, current_temp)
         if deadline_hours > 0:
             predicted_deadline = (
                 datetime.datetime.now(tz=datetime.UTC)
@@ -984,6 +1021,9 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
             "temp_low": temp_low,
             "temp_min": temp_min,
             "outside_temp": latest_outside_temp,
+            "weather_forecast": [
+                {"time": t, "temp": v} for t, v in sorted(weather_forecast.items())
+            ],
             "cooling_k": cooling_k,
             "predicted_deadline": predicted_deadline,
             "predicted_temps": _predict_future_temps(),
@@ -1051,9 +1091,8 @@ def _handle_telegram_status(chat_id: str) -> None:
                 f"\u26a0\ufe0f Manual override until"
                 f" {manual_override_endtime.astimezone(tz).strftime('%H:%M')}"
             )
-        outside = latest_outside_temp if latest_outside_temp is not None else 15.0
         temp_min = float(os.getenv("TEMP_MIN", "34"))
-        dh = predict_time_to_temp(temp_min, pool["current_temp"], outside)
+        dh = predict_time_to_temp(temp_min, pool["current_temp"])
         if dh > 0:
             deadline = datetime.datetime.now(
                 ZoneInfo("Europe/Helsinki")
