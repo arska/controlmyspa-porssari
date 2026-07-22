@@ -9,9 +9,11 @@ import collections
 import datetime
 import functools
 import logging
+import math
 import os
 import pathlib
 import sqlite3
+import statistics
 import threading
 from zoneinfo import ZoneInfo
 
@@ -38,14 +40,16 @@ DEFAULT_WEATHER_LON = "22.27"
 # the JSON (KeyError for a missing field, ValueError for bad/no JSON). Kept as a
 # named tuple because ruff 0.15.21's formatter mangles inline `except (...)`.
 WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
-# Average heating rate in °C per hour, measured empirically
-HEATING_RATE_PER_HOUR = 1.5
 SPOT_HINTA_API = "https://api.spot-hinta.fi"
 # Named tuples for except clauses — ruff 0.15.21 strips inline parentheses.
 PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
 PRICE_UPDATE_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 hourly_prices: dict[str, float] = {}
 heating_schedule: set[str] = set()
+DEFAULT_COOLING_K = 0.006
+MIN_COOLING_K = 0.002  # Pool can't cool slower than this (physical limit)
+MAX_COOLING_K = 0.020  # Pool can't cool faster than this (lid off in winter)
+cooling_k: float = DEFAULT_COOLING_K  # pylint: disable=invalid-name
 # Generous in-memory buffer; SQLite is the source of truth for persistence
 temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
 
@@ -62,6 +66,11 @@ manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
 last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 STALE_ALERT_ACTIVE = False
+
+
+def _heating_rate() -> float:
+    """Return heating rate in °C/h from env or default."""
+    return float(os.getenv("HEATING_RATE", "2.5"))
 
 
 def send_telegram(message: str, *, chat_id: str | None = None) -> None:
@@ -379,50 +388,174 @@ def update_prices() -> None:
             APP.logger.exception("failed to update prices")
 
 
-def calculate_schedule() -> None:
-    """Pick the cheapest future hours to heat, respecting the rolling 24h budget.
+def estimate_cooling_rate() -> float:
+    """Estimate the cooling constant k from recent temperature history.
 
-    Examines temperature_history to count hours already heated in the
-    trailing 24h window, then greedily picks the cheapest remaining
-    eligible hours up to HEATING_HOURS total.
+    Scans for non-heating periods (desired_temp < TEMP_HIGH) and calculates
+    k from observed temperature drops using Newton's law of cooling.
+    Returns the median k or DEFAULT_COOLING_K if insufficient data.
+    """
+    global cooling_k  # noqa: PLW0603
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    k_values = []
+    history = list(temperature_history)
+    for i in range(1, len(history)):
+        prev, curr = history[i - 1], history[i]
+        # Only use non-heating periods
+        if prev["desired_temp"] >= temp_high or curr["desired_temp"] >= temp_high:
+            continue
+        if prev.get("outside_temp") is None or curr.get("outside_temp") is None:
+            continue
+        drop = prev["current_temp"] - curr["current_temp"]
+        if drop <= 0:
+            continue
+        dt_hours = (
+            datetime.datetime.fromisoformat(curr["time"])
+            - datetime.datetime.fromisoformat(prev["time"])
+        ).total_seconds() / 3600
+        if dt_hours <= 0:
+            continue
+        temp_diff = prev["current_temp"] - prev["outside_temp"]
+        if temp_diff <= 1:
+            continue
+        k_values.append((drop / dt_hours) / temp_diff)
+
+    min_data_points = 5
+    if len(k_values) >= min_data_points:
+        median_k = statistics.median(k_values)
+        clamped = max(MIN_COOLING_K, min(MAX_COOLING_K, median_k))
+        if clamped != median_k:
+            APP.logger.warning(
+                "cooling k=%.5f clamped to %.5f (bounds [%.3f, %.3f])",
+                median_k,
+                clamped,
+                MIN_COOLING_K,
+                MAX_COOLING_K,
+            )
+        cooling_k = clamped
+    else:
+        cooling_k = DEFAULT_COOLING_K
+    APP.logger.info("cooling rate k=%.5f (%d data points)", cooling_k, len(k_values))
+    return cooling_k
+
+
+def predict_time_to_temp(
+    target_temp: float, current_temp: float, outside_temp: float
+) -> float:
+    """Predict hours until pool drops from current_temp to target_temp.
+
+    Uses linear approximation of Newton's law of cooling.
+    Returns 0.0 if pool is already at or below target.
+    """
+    if current_temp <= target_temp:
+        return 0.0
+    temp_diff = current_temp - outside_temp
+    if temp_diff <= 0:
+        return 0.0
+    return (current_temp - target_temp) / (cooling_k * temp_diff)
+
+
+def _heated_hours_in_window(tz: ZoneInfo, temp_high: int) -> set[str]:
+    """Count distinct hours heated in the current 14:00-14:00 budget window."""
+    now_local = datetime.datetime.now(tz)
+    window_start = now_local.replace(hour=14, minute=0, second=0, microsecond=0)
+    if now_local.hour < 14:  # noqa: PLR2004
+        window_start -= datetime.timedelta(days=1)
+    window_start_utc = window_start.astimezone(datetime.UTC)
+    heated: set[str] = set()
+    for entry in temperature_history:
+        entry_time = datetime.datetime.fromisoformat(entry["time"])
+        if entry_time >= window_start_utc and entry["desired_temp"] >= temp_high:
+            entry_local = entry_time.astimezone(tz)
+            heated.add(
+                entry_local.replace(minute=0, second=0, microsecond=0).isoformat()
+            )
+    return heated
+
+
+def _candidate_hours(
+    future_prices: dict[str, float],
+    now_local: datetime.datetime,
+    deadline_hours: float,
+    hours_needed: int,
+) -> dict[str, float]:
+    """Return price hours within the deadline, falling back to all future prices."""
+    if deadline_hours <= 0:
+        return future_prices
+    deadline_dt = now_local + datetime.timedelta(hours=deadline_hours)
+    within = {
+        k: v
+        for k, v in future_prices.items()
+        if datetime.datetime.fromisoformat(k) <= deadline_dt
+    }
+    return within if len(within) >= hours_needed else future_prices
+
+
+def calculate_schedule() -> None:
+    """Schedule heating based on cooling model and electricity prices.
+
+    Predicts when the pool will drop to TEMP_MIN, then picks the cheapest
+    hours before that deadline. Capped by HEATING_HOURS per 14:00-14:00
+    budget window.
     """
     global heating_schedule  # noqa: PLW0603
     tz = ZoneInfo("Europe/Helsinki")
     now_local = datetime.datetime.now(tz)
-    now_hour = now_local.replace(minute=0, second=0, microsecond=0)
-    heating_hours_budget = int(os.getenv("HEATING_HOURS", "3"))
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    temp_min = float(os.getenv("TEMP_MIN", "34"))
+    max_hours = int(os.getenv("HEATING_HOURS", "6"))
 
-    # Count distinct hours heated in the last 24h from temperature_history
-    cutoff_24h = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=24)
-    heated_hours: set[str] = set()
-    for entry in temperature_history:
-        entry_time = datetime.datetime.fromisoformat(entry["time"])
-        if entry_time >= cutoff_24h and entry["desired_temp"] >= temp_high:
-            entry_local = entry_time.astimezone(tz)
-            hour_key = entry_local.replace(
-                minute=0, second=0, microsecond=0
-            ).isoformat()
-            heated_hours.add(hour_key)
+    estimate_cooling_rate()
 
-    already_heated = len(heated_hours)
-    remaining_budget = max(0, heating_hours_budget - already_heated)
+    current_temp = (
+        temperature_history[-1]["current_temp"] if temperature_history else temp_min
+    )
+    outside_temp = latest_outside_temp if latest_outside_temp is not None else 15.0
+    deadline_hours = predict_time_to_temp(temp_min, current_temp, outside_temp)
+    hours_needed = math.ceil((temp_high - temp_min) / _heating_rate())
 
-    # Filter to future hours only and sort by price
     future_prices = {
         k: v
         for k, v in hourly_prices.items()
-        if datetime.datetime.fromisoformat(k) >= now_hour
+        if datetime.datetime.fromisoformat(k)
+        >= now_local.replace(minute=0, second=0, microsecond=0)
     }
-    sorted_hours = sorted(future_prices, key=future_prices.get)
 
-    # Pick cheapest hours up to remaining budget
-    heating_schedule = set(sorted_hours[:remaining_budget])
+    if not future_prices:
+        heating_schedule = set()
+        APP.logger.warning("no future prices available, clearing schedule")
+        return
+
+    candidates = _candidate_hours(
+        future_prices, now_local, deadline_hours, hours_needed
+    )
+    sorted_hours = sorted(candidates, key=candidates.get)
+
+    heated_in_window = _heated_hours_in_window(tz, temp_high)
+    remaining_budget = max(0, max_hours - len(heated_in_window))
+
+    pick_count = min(hours_needed, remaining_budget)
+    if pick_count == 0 and remaining_budget > 0 and current_temp < temp_high:
+        pick_count = 1
+
+    heating_schedule = set(sorted_hours[:pick_count])
+
+    if hours_needed > remaining_budget:
+        APP.logger.warning(
+            "budget exhausted: need %d hours but only %d remaining in window"
+            " (pool may drop below TEMP_MIN)",
+            hours_needed,
+            remaining_budget,
+        )
+
     APP.logger.info(
-        "schedule: %d hours planned (budget %d, used %d): %s",
+        "schedule: %d hours (need %d, budget %d/%d, deadline %.1fh, k=%.5f): %s",
         len(heating_schedule),
-        heating_hours_budget,
-        already_heated,
+        hours_needed,
+        len(heated_in_window),
+        max_hours,
+        deadline_hours,
+        cooling_k,
         sorted(heating_schedule),
     )
 
@@ -606,7 +739,7 @@ def status() -> str:
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     if pool and pool["current_temp"] < temp_high:
         degrees_remaining = temp_high - pool["current_temp"]
-        heat_estimate_minutes = int(degrees_remaining / HEATING_RATE_PER_HOUR * 60)
+        heat_estimate_minutes = int(degrees_remaining / _heating_rate() * 60)
         heat_estimate_time = datetime.datetime.now(
             ZoneInfo("Europe/Helsinki")
         ) + datetime.timedelta(minutes=heat_estimate_minutes)
@@ -620,6 +753,16 @@ def status() -> str:
         if datetime.datetime.fromisoformat(k)
         >= now_local.replace(minute=0, second=0, microsecond=0)
     ]
+
+    temp_min = float(os.getenv("TEMP_MIN", "34"))
+    predicted_deadline = None
+    if pool:
+        outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+        dh = predict_time_to_temp(temp_min, pool["current_temp"], outside)
+        if dh > 0:
+            predicted_deadline = datetime.datetime.now(
+                ZoneInfo("Europe/Helsinki")
+            ) + datetime.timedelta(hours=dh)
 
     return flask.render_template(
         "index.html",
@@ -637,6 +780,10 @@ def status() -> str:
         temp_low=int(os.getenv("TEMP_LOW", "0")),
         outside_temp=latest_outside_temp,
         auth_required=bool(os.getenv("ADMIN_PASSWORD")),
+        temp_min=temp_min,
+        predicted_deadline_str=predicted_deadline.strftime("%d.%m.%Y %H:%M")
+        if predicted_deadline
+        else None,
     )
 
 
@@ -696,8 +843,56 @@ def api_override() -> flask.Response:
     )
 
 
+def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
+    """Predict future pool temperature considering cooling and scheduled heating.
+
+    Returns a list of {time, temp} entries for each future hour.
+    """
+    tz = ZoneInfo("Europe/Helsinki")
+    now_local = datetime.datetime.now(tz)
+    now_hour = now_local.replace(minute=0, second=0, microsecond=0)
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+    heating_rate = _heating_rate()
+
+    current = temperature_history[-1]["current_temp"] if temperature_history else 34.0
+    predictions = []
+
+    # Predict for each future hour we have prices for
+    for time_key in sorted(hourly_prices):
+        dt = datetime.datetime.fromisoformat(time_key)
+        if dt < now_hour:
+            continue
+        hours_ahead = (dt - now_hour).total_seconds() / 3600
+        if hours_ahead > 48:  # noqa: PLR2004
+            break
+
+        # Simulate: for each hour, apply cooling then heating if scheduled
+        temp = current
+        for h in range(int(hours_ahead) + 1):
+            step_dt = now_hour + datetime.timedelta(hours=h)
+            step_key = step_dt.isoformat()
+            # Cool for one hour
+            if h > 0:
+                drop = cooling_k * (temp - outside)
+                temp -= drop
+            # Heat if scheduled
+            if step_key in heating_schedule:
+                temp += heating_rate
+                temp = min(temp, float(temp_high))
+
+        predictions.append(
+            {
+                "time": dt.astimezone(datetime.UTC).isoformat(),
+                "temp": round(temp, 1),
+            }
+        )
+
+    return predictions
+
+
 @APP.route("/api/temperatures")
-def api_temperatures() -> flask.Response:
+def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
     """Return temperature history and future price schedule as JSON."""
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     temp_low = int(os.getenv("TEMP_LOW", "0"))
@@ -716,6 +911,20 @@ def api_temperatures() -> flask.Response:
                 "heating": time_key in heating_schedule,
             }
         )
+
+    temp_min = float(os.getenv("TEMP_MIN", "34"))
+    current_temp = (
+        temperature_history[-1]["current_temp"] if temperature_history else None
+    )
+    outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+    predicted_deadline = None
+    if current_temp is not None:
+        deadline_hours = predict_time_to_temp(temp_min, current_temp, outside)
+        if deadline_hours > 0:
+            predicted_deadline = (
+                datetime.datetime.now(tz=datetime.UTC)
+                + datetime.timedelta(hours=deadline_hours)
+            ).isoformat()
 
     # All prices (past + future) for chart overlay
     all_prices = [
@@ -736,7 +945,12 @@ def api_temperatures() -> flask.Response:
             "prices": all_prices,
             "temp_high": temp_high,
             "temp_low": temp_low,
+            "temp_min": temp_min,
             "outside_temp": latest_outside_temp,
+            "cooling_k": cooling_k,
+            "predicted_deadline": predicted_deadline,
+            "predicted_temps": _predict_future_temps(),
+            "prices": all_prices,
         }
     )
 
@@ -793,13 +1007,23 @@ def _handle_telegram_status(chat_id: str) -> None:
         ]
         if pool["current_temp"] < temp_high:
             remaining = temp_high - pool["current_temp"]
-            minutes = int(remaining / HEATING_RATE_PER_HOUR * 60)
+            minutes = int(remaining / _heating_rate() * 60)
             lines.append(f"\u23f1 Est. heating time: {format_duration(minutes)}")
         if override_active:
             tz = ZoneInfo("Europe/Helsinki")
             lines.append(
                 f"\u26a0\ufe0f Manual override until"
                 f" {manual_override_endtime.astimezone(tz).strftime('%H:%M')}"
+            )
+        outside = latest_outside_temp if latest_outside_temp is not None else 15.0
+        temp_min = float(os.getenv("TEMP_MIN", "34"))
+        dh = predict_time_to_temp(temp_min, pool["current_temp"], outside)
+        if dh > 0:
+            deadline = datetime.datetime.now(
+                ZoneInfo("Europe/Helsinki")
+            ) + datetime.timedelta(hours=dh)
+            lines.append(
+                f"\u23f0 Reaches {temp_min}\u00b0C at ~{deadline.strftime('%H:%M')}"
             )
         send_telegram("\n".join(lines), chat_id=chat_id)
     else:

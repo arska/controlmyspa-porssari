@@ -133,6 +133,9 @@
         {% if heat_estimate_minutes is not none %}
             <span class="override-status" style="width: 100%;">Estimated time to {{ temp_high }}°C: ~{{ heat_estimate_minutes // 60 }}h {{ heat_estimate_minutes % 60 }}min ({{ heat_estimate_time.strftime('%d.%m.%Y %H:%M') }})</span>
         {% endif %}
+        {% if predicted_deadline_str %}
+            <span class="override-status" style="width: 100%;">Pool will reach {{ temp_min }}°C at ~{{ predicted_deadline_str }}</span>
+        {% endif %}
     </div>
 </div>
 
@@ -223,6 +226,27 @@
                             borderColor: '#7f8c8d',
                             tension: 0.3,
                             pointRadius: 2,
+                            fill: false
+                        },
+                        {
+                            label: 'Predicted temp',
+                            data: (data.predicted_temps || []).map(p => ({x: new Date(p.time), y: p.temp})),
+                            borderColor: '#e74c3c',
+                            borderDash: [5, 5],
+                            tension: 0.3,
+                            pointRadius: 0,
+                            fill: false
+                        },
+                        {
+                            label: 'TEMP_MIN',
+                            data: data.predicted_temps && data.predicted_temps.length > 0
+                                ? [{x: new Date(data.history[0]?.time || Date.now()), y: data.temp_min},
+                                   {x: new Date(data.predicted_temps[data.predicted_temps.length - 1].time), y: data.temp_min}]
+                                : [],
+                            borderColor: '#e67e22',
+                            borderDash: [10, 5],
+                            tension: 0,
+                            pointRadius: 0,
                             fill: false
                         },
                         {

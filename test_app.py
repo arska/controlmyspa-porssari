@@ -28,6 +28,7 @@ def _reset_state():
     app_module.db_conn = None
     app_module.hourly_prices = {}
     app_module.heating_schedule = set()
+    app_module.cooling_k = app_module.DEFAULT_COOLING_K
     yield
 
 
@@ -1432,78 +1433,294 @@ class TestPriceScheduleAPI:
         assert "0.045" in reply or "4.5" in reply
 
 
-class TestCalculateSchedule:
-    """Tests for cheapest-hours schedule calculation."""
+class TestCoolingModel:
+    """Tests for cooling rate estimation and temperature prediction."""
 
-    @patch.dict("os.environ", {"HEATING_HOURS": "2", "TEMP_HIGH": "37"})
-    def test_picks_cheapest_hours(self):
-        """calculate_schedule() picks the N cheapest future hours."""
-        now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
-        # Create prices for next 6 hours
-        prices = {}
-        for i in range(6):
-            dt = (now + datetime.timedelta(hours=i)).replace(
-                minute=0, second=0, microsecond=0
+    def test_estimate_cooling_rate(self):
+        """estimate_cooling_rate() calculates k from temperature drops."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        # Simulate cooling: pool at 37°C, outside 20°C, dropping 0.5°C over 5h
+        # k = (0.5/5) / (37 - 20) = 0.1 / 17 ≈ 0.00588
+        for i in range(3):
+            app_module.temperature_history.append(
+                {
+                    "time": (now - datetime.timedelta(hours=10 - i * 5)).isoformat(),
+                    "current_temp": 37.0 - i * 0.5,
+                    "desired_temp": 10.0,
+                    "outside_temp": 20.0,
+                }
             )
-            prices[dt.isoformat()] = float(5 - i)  # 5,4,3,2,1,0 — last is cheapest
-        app_module.hourly_prices = prices
-        app_module.calculate_schedule()
-        # Should pick the 2 cheapest (hours 4 and 5, prices 1.0 and 0.0)
-        assert len(app_module.heating_schedule) == 2
-        cheapest_keys = sorted(prices, key=prices.get)[:2]
-        assert app_module.heating_schedule == set(cheapest_keys)
+        result = app_module.estimate_cooling_rate()
+        assert result == pytest.approx(0.00588, abs=0.001)
+        assert app_module.cooling_k == result
 
-    @patch.dict("os.environ", {"HEATING_HOURS": "3", "TEMP_HIGH": "37"})
-    def test_respects_24h_budget(self):
-        """calculate_schedule() reduces budget based on recent heating history."""
+    def test_estimate_cooling_rate_default(self):
+        """estimate_cooling_rate() returns DEFAULT_COOLING_K with insufficient data."""
+        result = app_module.estimate_cooling_rate()
+        assert result == app_module.DEFAULT_COOLING_K
+        assert app_module.cooling_k == app_module.DEFAULT_COOLING_K
+
+    def test_predict_time_to_temp(self):
+        """predict_time_to_temp() calculates hours until target temp."""
+        app_module.cooling_k = 0.006
+        # Pool 37°C, outside 20°C, target 34°C
+        # hours = (37 - 34) / (0.006 * (37 - 20)) = 3 / 0.102 ≈ 29.4
+        hours = app_module.predict_time_to_temp(34.0, 37.0, 20.0)
+        assert hours == pytest.approx(29.4, abs=1.0)
+
+    def test_predict_time_to_temp_already_below(self):
+        """predict_time_to_temp() returns 0 when pool is already at or below target."""
+        app_module.cooling_k = 0.006
+        hours = app_module.predict_time_to_temp(34.0, 33.0, 20.0)
+        assert hours == 0.0
+
+    def test_predict_time_to_temp_cold_outside(self):
+        """predict_time_to_temp() returns shorter time with cold outside temp."""
+        app_module.cooling_k = 0.006
+        hours_warm = app_module.predict_time_to_temp(34.0, 37.0, 20.0)
+        hours_cold = app_module.predict_time_to_temp(34.0, 37.0, 0.0)
+        assert hours_cold < hours_warm
+
+
+class TestEnhancedAPI:
+    """Tests for enhanced /api/temperatures response."""
+
+    @patch.dict(
+        "os.environ",
+        {
+            "TEMP_HIGH": "37",
+            "TEMP_LOW": "10",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_api_returns_predicted_temps(self, client):
+        """API returns predicted future temperature curve."""
         tz = ZoneInfo("Europe/Helsinki")
+        now = datetime.datetime.now(tz=datetime.UTC)
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 36.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
         now_local = datetime.datetime.now(tz)
-        # Simulate 2 distinct heated hours in the last 24h by anchoring to
-        # exact hour boundaries so the count is timing-independent.
-        hour_minus_3 = (now_local - datetime.timedelta(hours=3)).replace(
+        future_hour = (now_local + datetime.timedelta(hours=1)).replace(
             minute=0, second=0, microsecond=0
         )
-        hour_minus_2 = (now_local - datetime.timedelta(hours=2)).replace(
-            minute=0, second=0, microsecond=0
+        app_module.hourly_prices = {future_hour.isoformat(): 0.05}
+        app_module.heating_schedule = set()
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert "predicted_temps" in data
+        assert "cooling_k" in data
+        assert "temp_min" in data
+        assert "predicted_deadline" in data
+        assert "prices" in data
+        assert data["cooling_k"] == pytest.approx(0.006)
+        assert data["temp_min"] == 34
+        assert len(data["predicted_temps"]) > 0
+        assert len(data["prices"]) > 0
+
+
+class TestCalculateSchedule:
+    """Tests for cooling-rate-based schedule calculation."""
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_schedule_heats_before_deadline(self):
+        """Schedules heating in cheapest hours before pool hits TEMP_MIN."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        tz = ZoneInfo("Europe/Helsinki")
+        # Pool at 35°C, outside 20°C, k=0.006
+        # Deadline: (35-34) / (0.006 * 15) = 11.1 hours
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 35.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
         )
-        for base_hour in (hour_minus_3, hour_minus_2):
-            for m in (0, 15, 30, 45):
-                t = base_hour + datetime.timedelta(minutes=m)
-                app_module.temperature_history.append(
-                    {
-                        "time": t.isoformat(),
-                        "current_temp": 35.0,
-                        "desired_temp": 37.0,
-                        "outside_temp": 10.0,
-                    }
-                )
-        # Create prices for next 6 hours
+        # Create prices: hours 0-11 from now, hour 5 is cheapest
+        now_local = datetime.datetime.now(tz)
         prices = {}
-        for i in range(6):
+        for i in range(12):
             dt = (now_local + datetime.timedelta(hours=i)).replace(
                 minute=0, second=0, microsecond=0
             )
-            prices[dt.isoformat()] = float(i)  # 0,1,2,3,4,5
+            prices[dt.isoformat()] = 0.05 if i != 5 else 0.001
         app_module.hourly_prices = prices
         app_module.calculate_schedule()
-        # Budget is 3, used 2, so only 1 hour should be scheduled
-        assert len(app_module.heating_schedule) == 1
+        # Should include the cheapest hour (hour 5)
+        cheapest_key = sorted(prices, key=prices.get)[0]
+        assert cheapest_key in app_module.heating_schedule
+        # hours_needed = ceil((37-34)/2.5) = 2
+        assert len(app_module.heating_schedule) == 2
 
-    @patch.dict("os.environ", {"HEATING_HOURS": "3", "TEMP_HIGH": "37"})
-    def test_skips_past_hours(self):
-        """calculate_schedule() ignores prices for past hours."""
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_schedule_immediate_when_below_min(self):
+        """Schedules heating immediately when pool is below TEMP_MIN."""
+        now = datetime.datetime.now(tz=datetime.UTC)
         tz = ZoneInfo("Europe/Helsinki")
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 33.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
         now_local = datetime.datetime.now(tz)
-        past = (now_local - datetime.timedelta(hours=2)).replace(
-            minute=0, second=0, microsecond=0
-        )
-        future = (now_local + datetime.timedelta(hours=1)).replace(
-            minute=0, second=0, microsecond=0
-        )
-        app_module.hourly_prices = {
-            past.isoformat(): 0.001,  # super cheap but in the past
-            future.isoformat(): 0.05,
-        }
+        current_hour = now_local.replace(minute=0, second=0, microsecond=0)
+        prices = {}
+        for i in range(6):
+            dt = current_hour + datetime.timedelta(hours=i)
+            prices[dt.isoformat()] = float(i + 1)
+        app_module.hourly_prices = prices
         app_module.calculate_schedule()
-        assert past.isoformat() not in app_module.heating_schedule
-        assert future.isoformat() in app_module.heating_schedule
+        # Current hour should be in schedule (immediate heating)
+        assert current_hour.isoformat() in app_module.heating_schedule
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "2",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_schedule_capped_by_budget(self):
+        """Schedule respects HEATING_HOURS safety cap."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 33.0,  # below TEMP_MIN, needs heating
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
+        now_local = datetime.datetime.now(tz)
+        prices = {}
+        for i in range(12):
+            dt = (now_local + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = 0.01
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+        # Cap at HEATING_HOURS=2 even though model might want more
+        assert len(app_module.heating_schedule) <= 2
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_budget_window_14_to_14(self):
+        """Schedule counts heated hours in 14:00-14:00 window only."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        # Pool needs heating
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 33.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
+        # Add 5 heated hours in the current 14:00 window
+        now_local = datetime.datetime.now(tz)
+        window_start = now_local.replace(hour=14, minute=0, second=0, microsecond=0)
+        if now_local.hour < 14:
+            window_start -= datetime.timedelta(days=1)
+        for i in range(5):
+            t = window_start + datetime.timedelta(hours=i)
+            app_module.temperature_history.append(
+                {
+                    "time": t.astimezone(datetime.UTC).isoformat(),
+                    "current_temp": 36.0,
+                    "desired_temp": 37.0,
+                    "outside_temp": 20.0,
+                }
+            )
+        prices = {}
+        for i in range(12):
+            dt = (now_local + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = 0.01
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+        # Budget is 6, used 5 in window, remaining 1
+        assert len(app_module.heating_schedule) <= 1
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "2.5",
+        },
+    )
+    def test_schedule_with_hot_pool(self):
+        """Hot pool schedules at least one cheap hour far out."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 37.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
+        now_local = datetime.datetime.now(tz)
+        prices = {}
+        for i in range(24):
+            dt = (now_local + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = float(i)  # cheapest is hour 0
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+        # Should schedule at least 1 hour (the cheapest)
+        assert len(app_module.heating_schedule) >= 1

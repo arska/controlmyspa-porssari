@@ -75,7 +75,7 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 ]
 
 [tool.pylint.design]
-max-module-lines = 1100
+max-module-lines = 1200
 
 [tool.pylint.messages_control]
 disable = ["pointless-string-statement", "global-statement"]
