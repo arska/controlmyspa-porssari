@@ -34,6 +34,10 @@ spec:
               value: "6"
             - name: TEMP_MIN
               value: "34"
+            - name: PRICE_MARGIN_DAY
+              value: "4.91"
+            - name: PRICE_MARGIN_NIGHT
+              value: "4.02"
             - name: SQLITE_PATH
               value: "/data/temperatures.db"
           envFrom:
