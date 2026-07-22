@@ -600,8 +600,8 @@ def status() -> str:
                         SpaOfflineError,
                     )
                 ),
-                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-                stop=tenacity.stop_after_delay(600),
+                wait=tenacity.wait_random_exponential(multiplier=1, max=5),
+                stop=tenacity.stop_after_delay(10),
                 before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
             ):
                 with attempt:
