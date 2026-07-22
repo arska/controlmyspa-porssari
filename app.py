@@ -405,37 +405,57 @@ def update_prices() -> None:
             APP.logger.exception("failed to update prices")
 
 
+def _measure_cooling_period(
+    history: list[dict], start_idx: int, end_idx: int, k_values: list[float]
+) -> None:
+    """Measure cooling rate across a continuous non-heating period."""
+    if start_idx >= end_idx:
+        return
+    start = history[start_idx]
+    end = history[end_idx]
+    drop = start["current_temp"] - end["current_temp"]
+    dt_hours = (
+        datetime.datetime.fromisoformat(end["time"])
+        - datetime.datetime.fromisoformat(start["time"])
+    ).total_seconds() / 3600
+    avg_outside = (start["outside_temp"] + end["outside_temp"]) / 2
+    avg_pool = (start["current_temp"] + end["current_temp"]) / 2
+    temp_diff = avg_pool - avg_outside
+    # Require >0 drop, ≥2h duration, meaningful temp difference
+    if drop > 0 and dt_hours >= 2 and temp_diff > 1:  # noqa: PLR2004
+        k_values.append((drop / dt_hours) / temp_diff)
+
+
 def estimate_cooling_rate() -> float:
     """Estimate the cooling constant k from recent temperature history.
 
-    Scans for non-heating periods (desired_temp < TEMP_HIGH) and calculates
-    k from observed temperature drops using Newton's law of cooling.
-    Returns the median k or DEFAULT_COOLING_K if insufficient data.
+    Finds continuous cooling periods (stretches where desired_temp < TEMP_HIGH)
+    and measures the overall temperature drop across each period. This avoids
+    noise from the spa's 0.5°C sensor resolution — a single 0.5°C step over
+    12 minutes looks like 2°C/h but is really just rounding. By measuring
+    across multi-hour cooling stretches we get the true rate.
     """
     global cooling_k  # noqa: PLW0603
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     k_values = []
     history = list(temperature_history)
-    for i in range(1, len(history)):
-        prev, curr = history[i - 1], history[i]
-        # Only use non-heating periods
-        if prev["desired_temp"] >= temp_high or curr["desired_temp"] >= temp_high:
-            continue
-        if prev.get("outside_temp") is None or curr.get("outside_temp") is None:
-            continue
-        drop = prev["current_temp"] - curr["current_temp"]
-        if drop <= 0:
-            continue
-        dt_hours = (
-            datetime.datetime.fromisoformat(curr["time"])
-            - datetime.datetime.fromisoformat(prev["time"])
-        ).total_seconds() / 3600
-        if dt_hours <= 0:
-            continue
-        temp_diff = prev["current_temp"] - prev["outside_temp"]
-        if temp_diff <= 1:
-            continue
-        k_values.append((drop / dt_hours) / temp_diff)
+
+    # Find continuous cooling periods and measure overall drop
+    period_start_idx = None
+    for i, entry in enumerate(history):
+        is_cooling = (
+            entry["desired_temp"] < temp_high and entry.get("outside_temp") is not None
+        )
+        if not is_cooling:
+            if period_start_idx is not None:
+                _measure_cooling_period(history, period_start_idx, i - 1, k_values)
+            period_start_idx = None
+        elif period_start_idx is None:
+            period_start_idx = i
+
+    # Handle ongoing cooling period at end of history
+    if period_start_idx is not None:
+        _measure_cooling_period(history, period_start_idx, len(history) - 1, k_values)
 
     min_data_points = 5
     if len(k_values) >= min_data_points:
