@@ -589,32 +589,6 @@ def require_auth(f):  # noqa: ANN001, ANN201
 def status() -> str:
     """WebGUI to show current heating schedule and (cached) pool temperatures."""
     pool = cache.get("pool")
-    if pool is None:
-        try:
-            for attempt in tenacity.Retrying(
-                retry=tenacity.retry_if_exception_type(
-                    (
-                        requests.exceptions.RequestException,
-                        KeyError,
-                        TypeError,
-                        SpaOfflineError,
-                    )
-                ),
-                wait=tenacity.wait_random_exponential(multiplier=1, max=60),
-                stop=tenacity.stop_after_delay(600),
-                before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
-            ):
-                with attempt:
-                    api = controlmyspa.ControlMySpa(
-                        os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
-                    )
-                    pool = {
-                        "desired_temp": api.desired_temp,
-                        "current_temp": api.current_temp,
-                    }
-                    cache.set("pool", pool, timeout=15 * 60)
-        except tenacity.RetryError:
-            pool = None
     # Estimate time to reach TEMP_HIGH based on average heating rate
     heat_estimate_minutes = None
     heat_estimate_time = None
