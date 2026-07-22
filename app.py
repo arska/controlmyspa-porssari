@@ -302,6 +302,10 @@ def _fetch_price_entries() -> list[dict]:
     for endpoint in ("/Today", "/DayForward"):
         try:
             resp = requests.get(f"{SPOT_HINTA_API}{endpoint}", timeout=10)
+            if resp.status_code == 404 and endpoint == "/DayForward":  # noqa: PLR2004
+                # Day-ahead prices aren't published yet (normal before ~13:00 CET)
+                APP.logger.info("day-ahead prices not yet available")
+                continue
             resp.raise_for_status()
             all_entries.extend(resp.json())
         except PRICE_FETCH_ERRORS:
