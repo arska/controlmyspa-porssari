@@ -45,7 +45,7 @@ jobs:
       - name: Install age
         uses: alessiodionisi/setup-age-action@v1.4.0
       - name: Install oc CLI
-        uses: redhat-actions/openshift-tools-installer@v1
+        uses: redhat-actions/openshift-tools-installer@v2
         with:
           oc: "4"
           skip_cache: true
