@@ -588,7 +588,11 @@ def calculate_schedule() -> None:
         temperature_history[-1]["current_temp"] if temperature_history else temp_min
     )
     deadline_hours = predict_time_to_temp(temp_min, current_temp)
-    hours_needed = math.ceil((temp_high - temp_min) / _heating_rate())
+    # Calculate hours needed based on current temp, not worst-case from TEMP_MIN
+    degrees_to_heat = max(0, temp_high - current_temp)
+    hours_needed = (
+        math.ceil(degrees_to_heat / _heating_rate()) if degrees_to_heat > 0 else 0
+    )
 
     future_prices = {
         k: v

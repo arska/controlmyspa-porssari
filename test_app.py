@@ -1617,8 +1617,8 @@ class TestCalculateSchedule:
         # Should include the cheapest hour (hour 5)
         cheapest_key = sorted(prices, key=prices.get)[0]
         assert cheapest_key in app_module.heating_schedule
-        # hours_needed = ceil((37-34)/2.5) = 2
-        assert len(app_module.heating_schedule) == 2
+        # hours_needed = ceil((37-35)/2.5) = 1 (based on current temp, not TEMP_MIN)
+        assert len(app_module.heating_schedule) == 1
 
     @patch.dict(
         "os.environ",
@@ -1771,5 +1771,5 @@ class TestCalculateSchedule:
             prices[dt.isoformat()] = float(i)  # cheapest is hour 0
         app_module.hourly_prices = prices
         app_module.calculate_schedule()
-        # Should schedule at least 1 hour (the cheapest)
-        assert len(app_module.heating_schedule) >= 1
+        # Pool is already at TEMP_HIGH — no heating needed
+        assert len(app_module.heating_schedule) == 0
