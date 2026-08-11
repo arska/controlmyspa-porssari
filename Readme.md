@@ -9,7 +9,7 @@ Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](h
 - **Web GUI** — temperature graph with predicted future temps, price overlay, TEMP_MIN threshold, schedule grid, manual override controls
 - **Telegram bot** — remote status checks with predicted deadline, override toggle, heat/cold commands, price schedule
 - **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), used by the cooling model to predict heat loss
-- **Persistent history** — temperature readings stored in SQLite, surviving restarts
+- **Persistent history** — temperature readings and hourly electricity prices stored in SQLite, surviving restarts. Prices are kept indefinitely so past scheduling decisions can be evaluated retroactively; the last 48h are held in memory for the chart
 - **Stale temperature alerts** — Telegram notifications when spa readings stop changing (gateway may be offline)
 
 ## Usage
@@ -46,7 +46,7 @@ Configure using environment variables. For local development, put them in a `.en
 | `PRICE_INTERVAL` | `60` | Price aggregation interval in minutes (`15` or `60`) |
 | `WEATHER_LAT` | `60.45` | Latitude for weather lookup (default: Turku) |
 | `WEATHER_LON` | `22.27` | Longitude for weather lookup (default: Turku) |
-| `SQLITE_PATH` | `/data/temperatures.db` | Path to SQLite DB for persistent temp history. SQLite is disabled if the parent directory doesn't exist, so local dev works without creating `/data/` |
+| `SQLITE_PATH` | `/data/temperatures.db` | Path to SQLite DB for persistent temperature and price history. SQLite is disabled if the parent directory doesn't exist, so local dev works without creating `/data/` |
 | `PORT` | `8080` | Web server port |
 | `SENTRY_URL` | | Sentry DSN for error tracking |
 | `TELEGRAM_BOT_TOKEN` | | Telegram bot token for notifications and commands |

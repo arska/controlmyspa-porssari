@@ -182,6 +182,29 @@
         });
     }
 
+    // Vertical green marker at the current time, separating history from forecast
+    const nowLine = {
+        id: 'nowLine',
+        afterDatasetsDraw(chart) {
+            const area = chart.chartArea;
+            const x = chart.scales.x.getPixelForValue(Date.now());
+            if (x < area.left || x > area.right) return;
+            const ctx = chart.ctx;
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(x, area.top);
+            ctx.lineTo(x, area.bottom);
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = '#27ae60';
+            ctx.stroke();
+            ctx.fillStyle = '#27ae60';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'left';
+            ctx.fillText('now', x + 4, area.top + 11);
+            ctx.restore();
+        }
+    };
+
     fetch('/api/temperatures')
         .then(r => r.json())
         .then(data => {
@@ -199,6 +222,7 @@
 
             new Chart(document.getElementById('tempChart'), {
                 type: 'line',
+                plugins: [nowLine],
                 data: {
                     datasets: [
                         {
