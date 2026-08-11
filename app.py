@@ -45,6 +45,9 @@ SPOT_HINTA_API = "https://api.spot-hinta.fi"
 PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
 PRICE_UPDATE_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 hourly_prices: dict[str, float] = {}
+# How far back prices are kept in memory (for the chart). SQLite keeps them
+# forever so past selections can be evaluated retroactively.
+PRICE_MEMORY_HOURS = 48
 heating_schedule: set[str] = set()
 DEFAULT_COOLING_K = 0.006
 MIN_COOLING_K = 0.002  # Pool can't cool slower than this (physical limit)
@@ -226,6 +229,10 @@ def init_db() -> None:
         )
     APP.logger.info("loaded %d temperature readings from SQLite", len(rows))
 
+    # Backfill recent prices so the chart keeps its history across restarts
+    hourly_prices.update(_load_recent_prices())
+    APP.logger.info("loaded %d price intervals from SQLite", len(hourly_prices))
+
 
 def initialize() -> None:
     """Initialize scheduled jobs and run the control loop."""
@@ -370,6 +377,46 @@ def _aggregate_prices(all_entries: list[dict], interval: int) -> dict[str, float
     return result
 
 
+def _within_price_memory(time_key: str) -> bool:
+    """Return whether a price interval is recent enough to keep in memory."""
+    try:
+        price_time = datetime.datetime.fromisoformat(time_key)
+    except ValueError:
+        APP.logger.warning("ignoring price with unparsable timestamp %r", time_key)
+        return False
+    if price_time.tzinfo is None:
+        price_time = price_time.replace(tzinfo=datetime.UTC)
+    cutoff = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
+        hours=PRICE_MEMORY_HOURS
+    )
+    return price_time >= cutoff
+
+
+def _load_recent_prices() -> dict[str, float]:
+    """Read prices of the last PRICE_MEMORY_HOURS from the price_history table."""
+    if db_conn is None:
+        return {}
+    rows = db_conn.execute("SELECT time, price FROM price_history").fetchall()
+    return {k: v for k, v in rows if _within_price_memory(k)}
+
+
+def _merge_prices(
+    remembered: dict[str, float], fresh: dict[str, float]
+) -> dict[str, float]:
+    """Merge freshly fetched prices over remembered ones, dropping stale entries.
+
+    spot-hinta.fi only serves today and tomorrow, so past prices would vanish
+    from the chart on every fetch. Keep them for PRICE_MEMORY_HOURS; freshly
+    fetched values always win over remembered ones for the same interval.
+    """
+    kept = {
+        k: v
+        for k, v in remembered.items()
+        if k not in fresh and _within_price_memory(k)
+    }
+    return kept | fresh
+
+
 def _persist_prices(new_prices: dict[str, float]) -> None:
     """Write aggregated prices to the price_history SQLite table."""
     if db_conn is None:
@@ -403,9 +450,11 @@ def update_prices() -> None:
                 return
             new_prices = _aggregate_prices(all_entries, interval)
             if new_prices:
-                hourly_prices = new_prices
+                hourly_prices = _merge_prices(hourly_prices, new_prices)
                 APP.logger.info(
-                    "got %d price intervals from spot-hinta.fi", len(new_prices)
+                    "got %d price intervals from spot-hinta.fi (%d kept in memory)",
+                    len(new_prices),
+                    len(hourly_prices),
                 )
                 _persist_prices(new_prices)
                 calculate_schedule()

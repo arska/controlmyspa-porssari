@@ -55,6 +55,11 @@ class TestStatusPage:
         assert b"35" in resp.data
         assert b"37" in resp.data
 
+    def test_status_page_draws_now_line(self, client):
+        """Status page chart includes the 'now' marker plugin."""
+        resp = client.get("/")
+        assert b"nowLine" in resp.data
+
     def test_status_page_loads_without_cache(self, client):
         """Status page renders even with no cached data (API failure)."""
         real_monotonic = time.monotonic
@@ -1315,6 +1320,68 @@ class TestSQLitePersistence:
         assert rows[0] == (34.5, 37.0, 8.0)
         app_module.db_conn.close()
 
+    def test_init_db_creates_price_table(self, tmp_path, monkeypatch):
+        """init_db() creates the price_history table."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        with app_module.APP.app_context():
+            app_module.init_db()
+        cursor = app_module.db_conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='price_history'"
+        )
+        assert cursor.fetchone() is not None
+        app_module.db_conn.close()
+
+    def test_startup_backfills_prices_from_sqlite(self, tmp_path, monkeypatch):
+        """init_db() backfills recent prices from the price_history table."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE price_history (time TEXT PRIMARY KEY, price REAL NOT NULL)"
+        )
+        tz = ZoneInfo("Europe/Helsinki")
+        now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
+        recent = (now - datetime.timedelta(hours=5)).isoformat()
+        old = (now - datetime.timedelta(hours=100)).isoformat()
+        conn.execute(
+            "INSERT INTO price_history (time, price) VALUES (?, ?)", (recent, 0.07)
+        )
+        conn.execute(
+            "INSERT INTO price_history (time, price) VALUES (?, ?)", (old, 0.09)
+        )
+        conn.commit()
+        conn.close()
+
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        # Only prices within the in-memory window are backfilled
+        assert app_module.hourly_prices == {recent: pytest.approx(0.07)}
+        app_module.db_conn.close()
+
+    def test_startup_ignores_unparsable_price_times(self, tmp_path, monkeypatch):
+        """init_db() skips price rows with a broken timestamp."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE price_history (time TEXT PRIMARY KEY, price REAL NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO price_history (time, price) VALUES (?, ?)", ("garbage", 0.07)
+        )
+        conn.commit()
+        conn.close()
+
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        assert app_module.hourly_prices == {}
+        app_module.db_conn.close()
+
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_set_temp_works_without_sqlite(self, mock_api_class):
@@ -1359,6 +1426,124 @@ class TestUpdatePrices:
         assert app_module.hourly_prices["2026-07-18T14:00:00+03:00"] == pytest.approx(
             0.05
         )
+
+    @patch("app.requests.get")
+    def test_keeps_recent_past_prices_in_memory(self, mock_get):
+        """update_prices() keeps recently seen prices the API no longer returns."""
+        tz = ZoneInfo("Europe/Helsinki")
+        now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
+        yesterday = (now - datetime.timedelta(hours=5)).isoformat()
+        app_module.hourly_prices = {yesterday: 0.03}
+
+        today_data = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        assert app_module.hourly_prices[yesterday] == pytest.approx(0.03)
+        assert "2026-07-18T10:00:00+03:00" in app_module.hourly_prices
+
+    @patch("app.requests.get")
+    def test_drops_stale_past_prices_from_memory(self, mock_get):
+        """update_prices() forgets in-memory prices older than the chart window."""
+        tz = ZoneInfo("Europe/Helsinki")
+        now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
+        stale = (now - datetime.timedelta(hours=100)).isoformat()
+        app_module.hourly_prices = {stale: 0.03}
+
+        today_data = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        assert stale not in app_module.hourly_prices
+
+    @patch("app.requests.get")
+    def test_fresh_prices_override_remembered_ones(self, mock_get):
+        """A re-fetched hour uses the fresh price, not the remembered one."""
+        today_data = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        app_module.hourly_prices = {"2026-07-18T10:00:00+03:00": 0.99}
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        assert app_module.hourly_prices["2026-07-18T10:00:00+03:00"] == pytest.approx(
+            0.02
+        )
+
+    @patch("app.requests.get")
+    def test_persists_past_prices_across_restart(self, mock_get, tmp_path, monkeypatch):
+        """Prices fetched before a restart are still available after init_db()."""
+        monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        tz = ZoneInfo("Europe/Helsinki")
+        past_hour = (datetime.datetime.now(tz) - datetime.timedelta(hours=5)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        today_data = [
+            {
+                "DateTime": (past_hour + datetime.timedelta(minutes=m)).isoformat(),
+                "PriceWithTax": 0.02,
+            }
+            for m in (0, 15, 30, 45)
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+        app_module.db_conn.close()
+
+        # Simulate a restart: memory is empty, SQLite still has the prices
+        app_module.hourly_prices = {}
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        assert app_module.hourly_prices[past_hour.isoformat()] == pytest.approx(0.02)
+        app_module.db_conn.close()
 
     @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
     def test_keeps_old_prices_on_failure(self, mock_get):
@@ -1454,6 +1639,20 @@ class TestPriceScheduleAPI:
         assert len(data["future"]) == 1
         assert data["future"][0]["price"] == pytest.approx(0.05)
         assert data["future"][0]["heating"] is True
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    def test_api_temperatures_returns_past_prices(self, client):
+        """GET /api/temperatures includes past prices for the chart overlay."""
+        tz = ZoneInfo("Europe/Helsinki")
+        past_hour = (datetime.datetime.now(tz) - datetime.timedelta(hours=3)).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.hourly_prices = {past_hour.isoformat(): 0.06}
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert data["future"] == []
+        assert len(data["prices"]) == 1
+        assert data["prices"][0]["price"] == pytest.approx(0.06)
 
     @patch.dict(
         "os.environ",

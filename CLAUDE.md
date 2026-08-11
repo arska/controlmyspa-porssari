@@ -8,8 +8,8 @@ Nordpool electricity-price-based temperature control for Balboa ControlMySpa hot
 
 ## Architecture
 
-Single-file Flask app (`app.py`). Temperature history is persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
-- `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi
+Single-file Flask app (`app.py`). Temperature and price history are persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
+- `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi. Fetched prices are merged over remembered ones and pruned to the last `PRICE_MEMORY_HOURS` (48h) so past hours stay on the chart; the `price_history` SQLite table keeps every price forever (source of truth, backfilled into memory on startup) for retroactive evaluation of the scheduling algorithm
 - `heating_schedule` — set of ISO datetime keys for hours to heat (determined by cooling model)
 - `cooling_k` — estimated cooling constant (Newton's law), updated from temperature history
 - `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=999)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; deque is backfilled from the last 48h on startup.
