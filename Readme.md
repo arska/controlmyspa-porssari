@@ -9,7 +9,7 @@ Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](h
 - **Web GUI** — temperature graph with predicted future temps, price overlay, TEMP_MIN threshold, schedule grid, manual override controls
 - **Telegram bot** — remote status checks with predicted deadline, override toggle, heat/cold commands, price schedule
 - **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), used by the cooling model to predict heat loss
-- **Persistent history** — temperature readings and hourly electricity prices stored in SQLite, surviving restarts. Prices are kept indefinitely so past scheduling decisions can be evaluated retroactively; the last 48h are held in memory for the chart
+- **Persistent history** — temperature readings and hourly electricity prices stored in SQLite, surviving restarts. Prices are kept indefinitely so past scheduling decisions can be evaluated retroactively; the last 7 days are held in memory for the chart
 - **Stale temperature alerts** — Telegram notifications when spa readings stop changing (gateway may be offline)
 
 ## Usage
@@ -42,7 +42,7 @@ Configure using environment variables. For local development, put them in a `.en
 | `TEMP_OVERRIDE` | `0` | If non-zero, overrides all price logic with this temperature |
 | `TEMP_MIN` | `34` | Minimum pool temperature — system heats to prevent dropping below this |
 | `HEATING_HOURS` | `6` | Max heating hours per 14:00-14:00 budget window (safety cap) |
-| `HEATING_RATE` | `2.5` | Heating rate in °C/h (measured from production data) |
+| `HEATING_RATE` | `1.6` | Heating rate in °C/h (measured from production data). Overestimating it books too few hours, so the pool tops off in a later, pricier hour |
 | `PRICE_INTERVAL` | `60` | Price aggregation interval in minutes (`15` or `60`) |
 | `WEATHER_LAT` | `60.45` | Latitude for weather lookup (default: Turku) |
 | `WEATHER_LON` | `22.27` | Longitude for weather lookup (default: Turku) |

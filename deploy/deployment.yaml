@@ -34,6 +34,8 @@ spec:
               value: "6"
             - name: TEMP_MIN
               value: "34"
+            - name: HEATING_RATE
+              value: "1.6"
             - name: PRICE_MARGIN_DAY
               value: "4.91"
             - name: PRICE_MARGIN_NIGHT

@@ -45,9 +45,10 @@ SPOT_HINTA_API = "https://api.spot-hinta.fi"
 PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
 PRICE_UPDATE_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 hourly_prices: dict[str, float] = {}
-# How far back prices are kept in memory (for the chart). SQLite keeps them
-# forever so past selections can be evaluated retroactively.
-PRICE_MEMORY_HOURS = 48
+# How far back prices are kept in memory (for the chart): a week, so the price
+# bars cover the whole temperature history the deque can hold. SQLite keeps
+# them forever so past selections can be evaluated retroactively.
+PRICE_MEMORY_HOURS = 168
 heating_schedule: set[str] = set()
 DEFAULT_COOLING_K = 0.006
 MIN_COOLING_K = 0.002  # Pool can't cool slower than this (physical limit)
@@ -75,8 +76,14 @@ STALE_ALERT_ACTIVE = False
 
 
 def _heating_rate() -> float:
-    """Return heating rate in °C/h from env or default."""
-    return float(os.getenv("HEATING_RATE", "2.5"))
+    """Return heating rate in °C/h from env or default.
+
+    The default is measured from production history: continuous heating
+    stretches gain ~1.5-1.8°C/h. Overestimating it books too few hours, so the
+    pool falls short and tops off in whatever hour is cheapest next — usually
+    a more expensive one than the hours that were skipped.
+    """
+    return float(os.getenv("HEATING_RATE", "1.6"))
 
 
 def send_telegram(message: str, *, chat_id: str | None = None) -> None:

@@ -1,6 +1,7 @@
 """Tests for controlmyspa-porssari application."""
 
 import datetime
+import os
 import sqlite3
 import time
 from unittest.mock import MagicMock, patch
@@ -1343,8 +1344,8 @@ class TestSQLitePersistence:
         )
         tz = ZoneInfo("Europe/Helsinki")
         now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
-        recent = (now - datetime.timedelta(hours=5)).isoformat()
-        old = (now - datetime.timedelta(hours=100)).isoformat()
+        recent = (now - datetime.timedelta(hours=100)).isoformat()
+        old = (now - datetime.timedelta(hours=200)).isoformat()
         conn.execute(
             "INSERT INTO price_history (time, price) VALUES (?, ?)", (recent, 0.07)
         )
@@ -1460,7 +1461,7 @@ class TestUpdatePrices:
         """update_prices() forgets in-memory prices older than the chart window."""
         tz = ZoneInfo("Europe/Helsinki")
         now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
-        stale = (now - datetime.timedelta(hours=100)).isoformat()
+        stale = (now - datetime.timedelta(hours=200)).isoformat()
         app_module.hourly_prices = {stale: 0.03}
 
         today_data = [
@@ -1818,6 +1819,43 @@ class TestCalculateSchedule:
         assert cheapest_key in app_module.heating_schedule
         # hours_needed = ceil((37-35)/2.5) = 1 (based on current temp, not TEMP_MIN)
         assert len(app_module.heating_schedule) == 1
+
+    @patch.dict(
+        "os.environ",
+        {"HEATING_HOURS": "6", "TEMP_HIGH": "37", "TEMP_MIN": "34"},
+    )
+    def test_default_heating_rate_books_enough_hours(self):
+        """The default heating rate books 2 hours to close a 2°C gap.
+
+        Measured production rate is ~1.6°C/h. Booking a single hour (as a
+        2.5°C/h estimate would) leaves the pool short, forcing a top-off in
+        whatever hour is cheapest *next* — typically a pricier one.
+        """
+        os.environ.pop("HEATING_RATE", None)
+        now = datetime.datetime.now(tz=datetime.UTC)
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 35.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
+        now_local = datetime.datetime.now(tz)
+        prices = {}
+        for i in range(12):
+            dt = (now_local + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = {5: 0.001, 6: 0.002}.get(i, 0.05)
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+
+        two_cheapest = set(sorted(prices, key=prices.get)[:2])
+        assert app_module.heating_schedule == two_cheapest
 
     @patch.dict(
         "os.environ",

@@ -9,7 +9,7 @@ Nordpool electricity-price-based temperature control for Balboa ControlMySpa hot
 ## Architecture
 
 Single-file Flask app (`app.py`). Temperature and price history are persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
-- `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi. Fetched prices are merged over remembered ones and pruned to the last `PRICE_MEMORY_HOURS` (48h) so past hours stay on the chart; the `price_history` SQLite table keeps every price forever (source of truth, backfilled into memory on startup) for retroactive evaluation of the scheduling algorithm
+- `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi. Fetched prices are merged over remembered ones and pruned to the last `PRICE_MEMORY_HOURS` (168h / 7 days) so past hours stay on the chart; the `price_history` SQLite table keeps every price forever (source of truth, backfilled into memory on startup) for retroactive evaluation of the scheduling algorithm
 - `heating_schedule` — set of ISO datetime keys for hours to heat (determined by cooling model)
 - `cooling_k` — estimated cooling constant (Newton's law), updated from temperature history
 - `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=999)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; deque is backfilled from the last 48h on startup.
@@ -40,7 +40,7 @@ TEMP_LOW=27          # Temperature during expensive hours
 TEMP_OVERRIDE=0      # If non-zero, overrides all logic with this temp
 TEMP_MIN=34          # Minimum pool temperature — system heats to prevent dropping below this
 HEATING_HOURS=6      # Max heating hours per 14:00-14:00 window (safety cap)
-HEATING_RATE=2.5     # Heating rate in °C/h (measured from production data)
+HEATING_RATE=1.6     # Heating rate in °C/h (measured from production data)
 PRICE_INTERVAL=60    # Aggregation interval in minutes (15 or 60)
 WEATHER_LAT=60.45    # Latitude for outside-temperature lookup (default: 20900 Turku)
 WEATHER_LON=22.27    # Longitude for outside-temperature lookup (default: 20900 Turku)
