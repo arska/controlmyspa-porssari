@@ -37,7 +37,7 @@ def ruff(session: nox.Session) -> None:
 def pylint(session: nox.Session) -> None:
     """Run pylint on the application modules."""
     session.install("pylint", *_project_deps())
-    session.run("pylint", "app", "pricing", "scheduling", "thermal")
+    session.run("pylint", "app", "pricing", "scheduling", "storage", "thermal")
 
 
 @nox.session
@@ -49,6 +49,7 @@ def tests(session: nox.Session) -> None:
         "--cov=app",
         "--cov=pricing",
         "--cov=scheduling",
+        "--cov=storage",
         "--cov=thermal",
         "--cov-report=term",
         "--cov-report=xml:coverage.xml",

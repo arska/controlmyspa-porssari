@@ -10,9 +10,6 @@ import datetime
 import functools
 import logging
 import os
-import pathlib
-import sqlite3
-import threading
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -30,6 +27,7 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import pricing
 import scheduling
+import storage
 import thermal
 
 if TYPE_CHECKING:
@@ -76,8 +74,7 @@ latest_outside_temp = None  # pylint: disable=invalid-name
 # Populated by update_weather() from Open-Meteo's hourly forecast.
 weather_forecast: dict[str, float] = {}
 
-db_conn: sqlite3.Connection | None = None  # pylint: disable=invalid-name
-db_lock = threading.Lock()
+store = storage.Store()  # disabled until init_db() opens SQLITE_PATH
 
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
@@ -216,60 +213,29 @@ def check_stale_temperature() -> None:
 
 
 def init_db() -> None:
-    """Open the SQLite database and backfill the temperature deque.
+    """Open the database and refill the temperature deque from it.
 
-    If the parent directory of SQLITE_PATH does not exist, SQLite is
-    silently disabled and the app runs in-memory only.
+    If the parent directory of SQLITE_PATH does not exist, persistence is
+    silently disabled and the app runs in memory only.
     """
-    global db_conn  # noqa: PLW0603
-    db_path = pathlib.Path(os.getenv("SQLITE_PATH", "/data/temperatures.db"))
-    if not db_path.parent.exists():
-        APP.logger.warning(
-            "SQLite disabled: directory %s does not exist", db_path.parent
-        )
+    global store  # noqa: PLW0603
+    store = storage.Store(os.getenv("SQLITE_PATH", "/data/temperatures.db"))
+    if not store.enabled:
         return
-    db_conn = sqlite3.connect(str(db_path), check_same_thread=False)
-    db_conn.execute("PRAGMA journal_mode=WAL")
-    db_conn.execute(
-        "CREATE TABLE IF NOT EXISTS temperature_readings ("
-        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-        "time TEXT NOT NULL, "
-        "current_temp REAL NOT NULL, "
-        "desired_temp REAL NOT NULL, "
-        "outside_temp REAL)"
-    )
-    db_conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_readings_time ON temperature_readings(time)"
-    )
-    db_conn.execute(
-        "CREATE TABLE IF NOT EXISTS price_history ("
-        "time TEXT PRIMARY KEY, "
-        "price REAL NOT NULL)"
-    )
-    db_conn.commit()
 
     # Fill the deque to capacity with the newest readings. A shorter window
     # starves the estimators: 48h of production data holds 2 cooling periods
     # and 1 heating stretch, short of the 5 and 3 they need, so every restart
     # would fall back to the default constants for days.
-    rows = db_conn.execute(
-        "SELECT time, current_temp, desired_temp, outside_temp "
-        "FROM temperature_readings ORDER BY time DESC LIMIT ?",
-        (temperature_history.maxlen,),
-    ).fetchall()
-    for time_str, current_temp, desired_temp, outside_temp in reversed(rows):
-        temperature_history.append(
-            {
-                "time": time_str,
-                "current_temp": current_temp,
-                "desired_temp": desired_temp,
-                "outside_temp": outside_temp,
-            }
-        )
-    APP.logger.info("loaded %d temperature readings from SQLite", len(rows))
+    readings = store.newest_readings(temperature_history.maxlen)
+    temperature_history.extend(readings)
+    APP.logger.info("loaded %d temperature readings from SQLite", len(readings))
 
     # Backfill recent prices so the chart keeps its history across restarts
-    hourly_prices.update(_load_recent_prices())
+    cutoff = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
+        hours=PRICE_MEMORY_HOURS
+    )
+    hourly_prices.update(store.prices_since(cutoff))
     APP.logger.info("loaded %d price intervals from SQLite", len(hourly_prices))
 
 
@@ -367,27 +333,6 @@ def update_weather() -> None:
             APP.logger.exception("failed to fetch outside temperature")
 
 
-def _load_recent_prices() -> dict[str, float]:
-    """Read prices of the last PRICE_MEMORY_HOURS from the price_history table."""
-    if db_conn is None:
-        return {}
-    rows = db_conn.execute("SELECT time, price FROM price_history").fetchall()
-    return {k: v for k, v in rows if pricing.within_memory(k, PRICE_MEMORY_HOURS)}
-
-
-def _persist_prices(new_prices: dict[str, float]) -> None:
-    """Write aggregated prices to the price_history SQLite table."""
-    if db_conn is None:
-        return
-    with db_lock:
-        for time_key, price in new_prices.items():
-            db_conn.execute(
-                "INSERT OR REPLACE INTO price_history (time, price) VALUES (?, ?)",
-                (time_key, price),
-            )
-        db_conn.commit()
-
-
 def update_prices() -> None:
     """Fetch electricity prices from spot-hinta.fi and aggregate to hourly.
 
@@ -416,7 +361,7 @@ def update_prices() -> None:
                     len(new_prices),
                     len(hourly_prices),
                 )
-                _persist_prices(new_prices)
+                store.save_prices(new_prices)
                 # Get a temperature reading in straight away, so the first
                 # planning run has something to work with.
                 scheduler.add_job(
@@ -625,20 +570,12 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                         "outside_temp": latest_outside_temp,
                     }
                 )
-                if db_conn is not None:
-                    with db_lock:
-                        db_conn.execute(
-                            "INSERT INTO temperature_readings "
-                            "(time, current_temp, desired_temp, outside_temp) "
-                            "VALUES (?, ?, ?, ?)",
-                            (
-                                temperature_history[-1]["time"],
-                                pool["current_temp"],
-                                pool["desired_temp"],
-                                latest_outside_temp,
-                            ),
-                        )
-                        db_conn.commit()
+                store.save_reading(
+                    temperature_history[-1]["time"],
+                    pool["current_temp"],
+                    pool["desired_temp"],
+                    latest_outside_temp,
+                )
 
                 APP.logger.info(
                     "current temp: %s, desired temp: %s",
@@ -954,7 +891,7 @@ def api_history() -> flask.Response:
     endpoint reaches the full tables, so past scheduling decisions can be
     replayed against the prices that were actually paid.
     """
-    if db_conn is None:
+    if not store.enabled:
         return flask.jsonify({"error": "sqlite disabled"}), 503
 
     now = datetime.datetime.now(tz=datetime.UTC)
@@ -972,42 +909,12 @@ def api_history() -> flask.Response:
     except ValueError:
         return flask.jsonify({"error": "from/to must be ISO timestamps"}), 400
 
-    with db_lock:
-        # Readings are stored as UTC ISO strings, so they compare lexically.
-        rows = db_conn.execute(
-            "SELECT time, current_temp, desired_temp, outside_temp "
-            "FROM temperature_readings WHERE time >= ? AND time <= ? "
-            "ORDER BY time LIMIT ?",
-            (start.isoformat(), end.isoformat(), limit),
-        ).fetchall()
-        # Price keys carry a local offset, so filter them on parsed values.
-        price_rows = db_conn.execute("SELECT time, price FROM price_history").fetchall()
-
-    prices = []
-    for time_key, price in sorted(price_rows):
-        try:
-            price_time = datetime.datetime.fromisoformat(time_key)
-        except ValueError:
-            continue
-        if price_time.tzinfo is None:
-            price_time = price_time.replace(tzinfo=datetime.UTC)
-        if start <= price_time <= end:
-            prices.append({"time": time_key, "price": price})
-
     return flask.jsonify(
         {
             "from": start.isoformat(),
             "to": end.isoformat(),
-            "readings": [
-                {
-                    "time": t,
-                    "current_temp": current,
-                    "desired_temp": desired,
-                    "outside_temp": outside,
-                }
-                for t, current, desired, outside in rows
-            ],
-            "prices": prices,
+            "readings": store.readings_between(start, end, limit),
+            "prices": store.prices_between(start, end),
         }
     )
 
