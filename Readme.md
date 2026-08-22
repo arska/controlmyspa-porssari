@@ -10,7 +10,7 @@ Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](h
 - **Telegram bot** — remote status checks with predicted deadline, override toggle, heat/cold commands, price schedule
 - **Outside temperature tracking** — hourly weather data from [Open-Meteo](https://open-meteo.com) (free, no API key), used by the cooling model to predict heat loss
 - **Persistent history** — temperature readings and hourly electricity prices stored in SQLite, surviving restarts. Prices are kept indefinitely so past scheduling decisions can be evaluated retroactively; the last 7 days are held in memory for the chart
-- **Stale temperature alerts** — Telegram notifications when spa readings stop changing (gateway may be offline)
+- **Stale temperature alerts** — Telegram notifications when the pool moves far less than the thermal model expects (gateway may be offline), judged within a single heating mode so a quiet night isn't mistaken for a fault
 
 ## Usage
 

@@ -662,6 +662,101 @@ class TestTelegram:
         {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
     )
     @patch("app.send_telegram")
+    def test_no_alert_when_a_heating_block_has_just_started(self, mock_tg):
+        """A night of quiet cooling must not read as a stuck heater.
+
+        Replays 19 Aug: three hours at a steady 35.5°C (the pool loses 0.26°C,
+        which the spa's 0.5°C sensor cannot show), then the 04:00 heating block
+        begins. The old check switched to its 3h heating window the moment the
+        setpoint went up and judged the pool against hours of cooling.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(24):
+            t = now - datetime.timedelta(minutes=185 - i * 7.5)
+            app_module.temperature_history.append(
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 35.5,
+                    "desired_temp": 10.0,
+                    "outside_temp": 15.0,
+                }
+            )
+        for minutes in (5, 0):  # heating just started
+            app_module.temperature_history.append(
+                {
+                    "time": (now - datetime.timedelta(minutes=minutes)).isoformat(),
+                    "current_temp": 35.5,
+                    "desired_temp": 37.0,
+                    "outside_temp": 15.0,
+                }
+            )
+
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_no_alert_while_a_pool_cools_as_slowly_as_expected(self, mock_tg):
+        """A pool losing 0.26°C in 12h is behaving, not stuck.
+
+        The model expects little movement in summer, so a flat 0.5°C threshold
+        would report every warm night as a dead gateway.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(49):
+            t = now - datetime.timedelta(minutes=725 - i * 15)
+            app_module.temperature_history.append(
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 35.5 - i * 0.005,
+                    "desired_temp": 10.0,
+                    "outside_temp": 22.0,  # warm night: barely any heat loss
+                }
+            )
+        app_module.cooling_k = 0.004
+
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_alerts_when_a_full_heating_block_moves_nothing(self, mock_tg):
+        """90 minutes of heating with no rise is a real fault."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(13):
+            t = now - datetime.timedelta(minutes=95 - i * 7.5)
+            app_module.temperature_history.append(
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 34.0,
+                    "desired_temp": 37.0,
+                    "outside_temp": 15.0,
+                }
+            )
+
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+
+        mock_tg.assert_called_once()
+        message = mock_tg.call_args[0][0]
+        assert "stuck" in message.lower()
+        assert "expected" in message.lower()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
     def test_stale_alert_general_mode(self, mock_tg):
         """Alert after 12h of identical readings in general mode."""
         now = datetime.datetime.now(tz=datetime.UTC)

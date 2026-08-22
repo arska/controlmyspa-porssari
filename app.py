@@ -78,6 +78,14 @@ manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
 last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 STALE_ALERT_ACTIVE = False
+# A heating block is 1-2h, so a longer window would never sit inside one.
+STALE_HEATING_MINUTES = 90
+STALE_IDLE_MINUTES = 720
+STUCK_FRACTION = 0.25  # stuck if the pool moved less than this much of expected
+MIN_STALE_READINGS = 3
+FORECAST_HOURS = 48  # how far the chart's predicted temperature runs
+DEFAULT_OUTSIDE_TEMP = 15.0  # used only until the first weather fetch lands
+DEFAULT_POOL_TEMP = 34.0  # used only until the first reading lands
 
 
 def _heating_rate() -> float:
@@ -131,54 +139,65 @@ def format_duration(total_minutes: int) -> str:
 
 
 def check_stale_temperature() -> None:
-    """Check if temperature readings are stale and alert via Telegram."""
+    """Alert via Telegram when the spa stops responding to what we command.
+
+    The pool is "stuck" when it moves far less than the thermal model says it
+    should — not when it fails to move a fixed 0.5°C, which a slowly cooling
+    pool never manages anyway. Only the current heating mode counts: the first
+    minutes of a heating block say nothing about whether the gateway is alive.
+    """
     global last_stale_alert_time, STALE_ALERT_ACTIVE  # noqa: PLW0603
 
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
     history = list(temperature_history)
-
-    if len(history) < 3:  # noqa: PLR2004
+    if len(history) < MIN_STALE_READINGS:
         return
 
-    # Determine if we're in heating mode
-    latest = history[-1]
-    heating = latest["desired_temp"] >= temp_high > latest["current_temp"]
-    stale_minutes = 180 if heating else 720  # 3h heating, 12h idle
-
-    # Find readings within the stale window using actual timestamps
+    stretch, heating = thermal.mode_stretch(history, temp_high)
+    stale_minutes = STALE_HEATING_MINUTES if heating else STALE_IDLE_MINUTES
     now = datetime.datetime.now(tz=datetime.UTC)
     cutoff = now - datetime.timedelta(minutes=stale_minutes)
+
     window = [
-        r for r in history if datetime.datetime.fromisoformat(r["time"]) >= cutoff
+        r for r in stretch if datetime.datetime.fromisoformat(r["time"]) >= cutoff
     ]
-
-    if len(window) < 3:  # noqa: PLR2004
+    if len(window) < MIN_STALE_READINGS:
         return
-
-    # Require that our history actually covers the full stale window.
-    # After a restart we may only have a few minutes of data — don't
-    # claim "stuck for 6h" when we've only been running for 45 minutes.
-    oldest_in_history = datetime.datetime.fromisoformat(history[0]["time"])
-    if oldest_in_history > cutoff:
+    # The stretch must cover the whole window. After a restart, or 20 minutes
+    # into a heating block, there is nothing to conclude yet.
+    if datetime.datetime.fromisoformat(stretch[0]["time"]) > cutoff:
         return
 
     temps = [r["current_temp"] for r in window]
-    is_stale = (max(temps) - min(temps)) < 0.5  # noqa: PLR2004
+    observed = max(temps) - min(temps)
+    outside = (
+        latest_outside_temp if latest_outside_temp is not None else DEFAULT_OUTSIDE_TEMP
+    )
+    expected = (
+        thermal.expected_gain(window, temp_high, _heating_rate())
+        if heating
+        else thermal.expected_drop(window, cooling_k, outside)
+    )
+    latest = history[-1]
 
-    if is_stale:
-        # Repeat the alert once per stale window (3h heating, 12h idle)
+    if expected > 0 and observed < expected * STUCK_FRACTION:
+        # Repeat the alert once per stale window
         if (now - last_stale_alert_time).total_seconds() < stale_minutes * 60:
             STALE_ALERT_ACTIVE = True
             return
+        stuck_minutes = int(
+            (now - datetime.datetime.fromisoformat(window[0]["time"])).total_seconds()
+            / 60
+        )
         mode = "heating" if heating else "idle"
-        duration = format_duration(stale_minutes)
         send_telegram(
             f"\u26a0\ufe0f Spa temperature stuck at {latest['current_temp']}\u00b0C"
-            f" for {duration} ({mode} mode,"
-            f" desired {latest['desired_temp']}\u00b0C)."
+            f" for {format_duration(stuck_minutes)} ({mode} mode,"
+            f" desired {latest['desired_temp']}\u00b0C):"
+            f" moved {observed:.1f}\u00b0C, expected {expected:.1f}\u00b0C."
             f" Gateway may be offline."
         )
-        last_stale_alert_time = datetime.datetime.now(tz=datetime.UTC)
+        last_stale_alert_time = now
         STALE_ALERT_ACTIVE = True
     elif STALE_ALERT_ACTIVE:
         send_telegram(
@@ -416,7 +435,7 @@ def _outside_temp_at(dt: datetime.datetime) -> float:
         return weather_forecast[key]
     if latest_outside_temp is not None:
         return latest_outside_temp
-    return 15.0
+    return DEFAULT_OUTSIDE_TEMP
 
 
 def _outside_temp_in(hours: int) -> float:
@@ -521,29 +540,22 @@ def _candidate_hours(
     return within if len(within) >= hours_needed else future_prices
 
 
-def _predict_temp_at(current_temp: float, target_dt: datetime.datetime) -> float:
-    """Predict the pool temperature at target_dt with no heating in between.
-
-    Uses the same hourly Newton stepping as predict_time_to_temp(), so a block
-    booked hours from now is sized against the temperature the pool will
-    actually have when heating starts — not the warmer one it has now.
-    """
-    now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
-    hours = (target_dt - now).total_seconds() / 3600
-    return thermal.temp_after(current_temp, hours, cooling_k, _outside_temp_in)
-
-
 def _hours_needed_at(
     current_temp: float, start_dt: datetime.datetime, temp_high: float
 ) -> int:
     """Hours of heating needed to reach TEMP_HIGH from a block starting at start_dt.
+
+    The pool cools until the block starts, so it is sized against the
+    temperature it will have then, not the warmer one it has now.
 
     Nothing is booked while the pool is within TEMP_DEADBAND of the target: the
     spa's sensor resolves 0.5°C, so without a deadband every sensor tick books
     a fresh hour of heating at whatever price happens to be cheapest next.
     """
     deadband = float(os.getenv("TEMP_DEADBAND", "1.0"))
-    temp_then = _predict_temp_at(current_temp, start_dt)
+    now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
+    hours = (start_dt - now).total_seconds() / 3600
+    temp_then = thermal.temp_after(current_temp, hours, cooling_k, _outside_temp_in)
     if temp_then > temp_high - deadband:
         return 0
     return math.ceil((temp_high - temp_then) / _heating_rate())
@@ -956,51 +968,37 @@ def api_override() -> flask.Response:
     )
 
 
-def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
-    """Predict future pool temperature considering cooling and scheduled heating.
+def _predict_future_temps() -> list[dict]:
+    """Predict pool temperature for each future hour we have a price for.
 
-    Returns a list of {time, temp} entries for each future hour.
+    One forward pass: cool each hour, then add the heater's gain if that hour
+    is booked, and record the result wherever a price interval starts.
     """
     tz = ZoneInfo("Europe/Helsinki")
-    now_local = datetime.datetime.now(tz)
-    now_hour = now_local.replace(minute=0, second=0, microsecond=0)
-    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    now_hour = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
+    temp_high = float(int(os.getenv("TEMP_HIGH", "0")))
     rate = _heating_rate()
+    temp = (
+        temperature_history[-1]["current_temp"]
+        if temperature_history
+        else DEFAULT_POOL_TEMP
+    )
 
-    current = temperature_history[-1]["current_temp"] if temperature_history else 34.0
     predictions = []
-
-    # Predict for each future hour we have prices for
-    for time_key in sorted(hourly_prices):
-        dt = datetime.datetime.fromisoformat(time_key)
-        if dt < now_hour:
-            continue
-        hours_ahead = (dt - now_hour).total_seconds() / 3600
-        if hours_ahead > 48:  # noqa: PLR2004
-            break
-
-        # Simulate: for each hour, apply cooling then heating if scheduled
-        temp = current
-        for h in range(int(hours_ahead) + 1):
-            step_dt = now_hour + datetime.timedelta(hours=h)
-            step_key = step_dt.isoformat()
-            outside = _outside_temp_at(step_dt)
-            # Cool for one hour
-            if h > 0 and temp > outside:
-                drop = cooling_k * (temp - outside)
-                temp -= drop
-            # Heat if scheduled
-            if step_key in heating_schedule:
-                temp += rate
-                temp = min(temp, float(temp_high))
-
-        predictions.append(
-            {
-                "time": dt.astimezone(datetime.UTC).isoformat(),
-                "temp": round(temp, 1),
-            }
-        )
-
+    for step in range(FORECAST_HOURS + 1):
+        step_dt = now_hour + datetime.timedelta(hours=step)
+        outside = _outside_temp_at(step_dt)
+        if step > 0 and temp > outside:
+            temp -= cooling_k * (temp - outside)
+        if step_dt.isoformat() in heating_schedule:
+            temp = min(temp + rate, temp_high)
+        if step_dt.isoformat() in hourly_prices:
+            predictions.append(
+                {
+                    "time": step_dt.astimezone(datetime.UTC).isoformat(),
+                    "temp": round(temp, 1),
+                }
+            )
     return predictions
 
 

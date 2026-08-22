@@ -109,6 +109,10 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 2. **ControlMySpa** (via `controlmyspa` package): Authenticates to `iot.controlmyspa.com`, reads/writes spa temperatures. Retries with exponential backoff (tenacity, up to 10 minutes).
 3. **Open-Meteo** (`https://api.open-meteo.com/v1/forecast`): Free, keyless weather API. `update_weather()` reads `current.temperature_2m` for WEATHER_LAT/WEATHER_LON. On failure the last value is kept.
 
+## Stale Temperature Alerts
+
+`check_stale_temperature()` (called from `set_temp()`) warns via Telegram when the spa stops responding. It compares the pool's actual movement against what the thermal model expects — `heating_rate × hours` while heating (capped by the headroom to TEMP_HIGH), `cooling_k × ΔT × hours` while idle — and alerts below `STUCK_FRACTION` (25%) of that. Only readings in the current heating mode count, and the mode stretch must cover the whole window (90 min heating / 12h idle); otherwise the first minutes of a heating block get judged against hours of cooling, which is how a normal night reads as a dead gateway.
+
 ## Manual Override Logic
 
 When the spa's desired temp doesn't match TEMP_HIGH or TEMP_LOW, the system assumes manual control via physical spa controls and pauses automatic control for 12 hours. The web GUI also allows enabling/disabling override via `/api/override`.

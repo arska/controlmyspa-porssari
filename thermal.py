@@ -153,3 +153,48 @@ def temp_after(
         if temp > outside:
             temp -= cooling_k * (temp - outside)
     return temp
+
+
+def mode_stretch(history: list[dict], temp_high: float) -> tuple[list[dict], bool]:
+    """Return the readings back to the last change of heating mode.
+
+    "Heating" means the spa was told to reach a temperature it had not yet
+    reached. Judging staleness across a mode change compares a heating spa
+    against hours of cooling, which is how a normal night looks stuck.
+    """
+
+    def is_heating(entry: dict) -> bool:
+        return entry["desired_temp"] >= temp_high > entry["current_temp"]
+
+    heating = is_heating(history[-1])
+    stretch: list[dict] = []
+    for entry in reversed(history):
+        if is_heating(entry) != heating:
+            break
+        stretch.append(entry)
+    return list(reversed(stretch)), heating
+
+
+def _window_hours(window: list[dict]) -> float:
+    """Hours spanned by a window of readings."""
+    return (
+        datetime.datetime.fromisoformat(window[-1]["time"])
+        - datetime.datetime.fromisoformat(window[0]["time"])
+    ).total_seconds() / 3600
+
+
+def expected_gain(window: list[dict], temp_high: float, heating_rate: float) -> float:
+    """Rise expected across the window, capped by the headroom to the setpoint."""
+    hours = _window_hours(window)
+    return min(heating_rate * hours, max(0.0, temp_high - window[0]["current_temp"]))
+
+
+def expected_drop(
+    window: list[dict], cooling_k: float, fallback_outside: float
+) -> float:
+    """Fall expected across the window, by Newton's law against the outside air."""
+    start_temp = window[0]["current_temp"]
+    outside = window[0].get("outside_temp")
+    if outside is None:
+        outside = fallback_outside
+    return cooling_k * max(0.0, start_temp - outside) * _window_hours(window)
