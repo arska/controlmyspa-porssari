@@ -108,6 +108,13 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 
 `SpaSimulator` (bottom of `test_app.py`) runs the real `calculate_schedule()` + `control()` loop every simulated 15 minutes against a thermal model (Newton cooling, `heating_rate` °C/h, readings quantised to the spa's 0.5°C sensor resolution). It patches `app.datetime` with a controllable clock — patching only app's namespace, not the global `datetime` module — and reproduces spot-hinta.fi's publication schedule (tomorrow's prices appear at 14:00), which is what surfaces re-planning bugs that static single-call tests cannot. `sim.cheapest_possible_cost()` gives the brute-force optimum for the hours actually consumed, so tests can assert on cost, not just on which hours were picked. The two defects it originally pinned as `xfail` (daytime top-offs, setpoint cycling from 0.5°C sensor ticks) are fixed; the tests now assert the cost stays within 10% of the brute-force optimum and that a day needs at most 3 setpoint starts.
 
+## Monitoring and Deployment
+
+- **Alerting must live outside the process it watches.** Every alert this app sends — the stale-temperature warning, the startup healthcheck — needs the app running, so none of them fire when it dies. That is the failure mode that matters most. See `docs/plans/2026-08-22-prometheus-telegram-alerting.md`: adopt Prometheus + Alertmanager with Telegram alerting from Landingpager, and retire the in-app heuristics it replaces.
+- **A build that succeeds proves nothing — run the image.** `nox -s docker` builds it *and* starts it, and the deploy job waits on that. An image that cannot start otherwise shows up only as a rollout timing out two minutes later.
+- **New module? Check the Dockerfile.** It copies named files, not the tree. `test_dockerfile.py` fails when an imported module is missing.
+- Treat a check you could not run (no Docker daemon, no credentials) as unverified, not as passing, and say so.
+
 ## External APIs
 
 1. **spot-hinta.fi** (`https://api.spot-hinta.fi/Today` and `/DayForward`): Returns 15-min interval Nordpool spot prices with tax for Finland. `update_prices()` fetches both endpoints and averages to PRICE_INTERVAL-minute slots.
