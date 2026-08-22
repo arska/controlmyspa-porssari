@@ -133,6 +133,15 @@ class TestTemperatureAPI:
         assert data["temp_high"] == 37
         assert data["temp_low"] == 27
 
+    def test_returns_the_measured_rates(self, client):
+        """The API exposes both estimated constants, not just cooling."""
+        app_module.cooling_k = 0.0041
+        app_module.heating_rate = 1.7
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert data["cooling_k"] == pytest.approx(0.0041)
+        assert data["heating_rate"] == pytest.approx(1.7)
+
     def test_returns_outside_temp(self, client):
         """Returns the latest outside temperature."""
         app_module.latest_outside_temp = 7.5
@@ -1294,6 +1303,45 @@ class TestInitialize:
         app_module.initialize()
         mock_tg.assert_called_once()
         assert "start" in mock_tg.call_args[0][0].lower()
+
+    @patch("app.scheduler")
+    @patch("app.send_telegram")
+    def test_schedules_planning_independently_of_prices(self, mock_tg, mock_scheduler):
+        """calculate_schedule() runs on its own timer, not off the price fetch.
+
+        A spot-hinta.fi outage must not freeze the thermal estimates or stop
+        the pool being re-planned against the prices already in memory.
+        """
+        app_module.initialize()
+        job_ids = {
+            call.kwargs.get("id") for call in mock_scheduler.add_job.call_args_list
+        }
+        assert "calculate_schedule" in job_ids
+        assert {"control", "update_prices", "update_weather"} <= job_ids
+
+    @patch("app.requests.get")
+    @patch("app.calculate_schedule")
+    def test_update_prices_does_not_drive_scheduling(self, mock_schedule, mock_get):
+        """Fetching prices stores them; planning is somebody else's job."""
+        today_data = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        assert "2026-07-18T10:00:00+03:00" in app_module.hourly_prices
+        mock_schedule.assert_not_called()
 
     @patch.dict(
         "os.environ",

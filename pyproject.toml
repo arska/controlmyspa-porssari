@@ -75,7 +75,11 @@ dummy-variable-rgx = "^(_+|(_+[a-zA-Z0-9_]*[a-zA-Z0-9]+?))$"
 ]
 
 [tool.pylint.design]
-max-module-lines = 1300
+# app.py sits just under this after thermal.py and pricing.py were split out.
+# The next reduction is moving the routes and the Telegram bot into their own
+# modules, which needs app.py's mutable globals untangled first -- so raise the
+# ceiling deliberately rather than shaving lines to fit it.
+max-module-lines = 1400
 
 [tool.pylint.messages_control]
 disable = ["pointless-string-statement", "global-statement"]

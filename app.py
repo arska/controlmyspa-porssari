@@ -14,6 +14,7 @@ import os
 import pathlib
 import sqlite3
 import threading
+from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
 import controlmyspa
@@ -30,6 +31,9 @@ from werkzeug.middleware.proxy_fix import ProxyFix
 
 import pricing
 import thermal
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
@@ -85,6 +89,7 @@ STALE_HEATING_MINUTES = 90
 STALE_IDLE_MINUTES = 720
 STUCK_FRACTION = 0.25  # stuck if the pool moved less than this much of expected
 MIN_STALE_READINGS = 3
+SCHEDULE_START_DELAY = 60  # seconds; long enough for the first reading to land
 FORECAST_HOURS = 48  # how far the chart's predicted temperature runs
 DEFAULT_OUTSIDE_TEMP = 15.0  # used only until the first weather fetch lands
 DEFAULT_POOL_TEMP = 34.0  # used only until the first reading lands
@@ -268,6 +273,21 @@ def init_db() -> None:
     APP.logger.info("loaded %d price intervals from SQLite", len(hourly_prices))
 
 
+def _add_interval_job(func: Callable, minutes: int, *, delay_seconds: int = 0) -> None:
+    """Register a background job repeating every `minutes`, named after `func`."""
+    scheduler.add_job(
+        func,
+        "interval",
+        minutes=minutes,
+        id=func.__name__,
+        misfire_grace_time=None,
+        coalesce=True,
+        max_instances=1,
+        next_run_time=datetime.datetime.now(tz=datetime.UTC)
+        + datetime.timedelta(seconds=delay_seconds),
+    )
+
+
 def initialize() -> None:
     """Initialize scheduled jobs and run the control loop."""
     init_db()
@@ -281,26 +301,12 @@ def initialize() -> None:
         coalesce=True,
         max_instances=1,
     )
-    scheduler.add_job(
-        update_prices,
-        "interval",
-        minutes=15,
-        id="update_prices",
-        misfire_grace_time=None,
-        coalesce=True,
-        max_instances=1,
-        next_run_time=datetime.datetime.now(tz=datetime.UTC),
-    )
-    scheduler.add_job(
-        update_weather,
-        "interval",
-        minutes=60,
-        id="update_weather",
-        misfire_grace_time=None,
-        coalesce=True,
-        max_instances=1,
-        next_run_time=datetime.datetime.now(tz=datetime.UTC),
-    )
+    _add_interval_job(update_prices, 15)
+    _add_interval_job(update_weather, 60)
+    # Planning runs on its own timer so a price outage cannot freeze the
+    # thermal estimates or stop re-planning against the prices in memory.
+    # The first run waits for control() to record a temperature.
+    _add_interval_job(calculate_schedule, 15, delay_seconds=SCHEDULE_START_DELAY)
     send_telegram("\U0001f6c1 controlmyspa-porssari started")
 
     # Register Telegram webhook if URL is configured
@@ -411,9 +417,8 @@ def update_prices() -> None:
                     len(hourly_prices),
                 )
                 _persist_prices(new_prices)
-                calculate_schedule()
-                # Run control immediately after schedule update,
-                # especially important on startup
+                # Get a temperature reading in straight away, so the first
+                # planning run has something to work with.
                 scheduler.add_job(
                     control,
                     "date",
@@ -838,6 +843,15 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
         )
 
 
+def _start_override(temp: float, hours: int) -> None:
+    """Take manual control at `temp` for `hours`, pausing automatic control."""
+    global manual_override_endtime  # noqa: PLW0603
+    manual_override_endtime = datetime.datetime.now(
+        tz=datetime.UTC
+    ) + datetime.timedelta(hours=hours)
+    set_temp(temp, skip_override_detection=True)
+
+
 def require_auth(f):  # noqa: ANN001, ANN201
     """Require Authorization: Bearer <ADMIN_PASSWORD> on protected endpoints.
 
@@ -943,20 +957,14 @@ def api_override() -> flask.Response:
         control(skip_override_detection=True)
     elif action == "heat":
         override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
-        manual_override_endtime = datetime.datetime.now(
-            tz=datetime.UTC
-        ) + datetime.timedelta(hours=12)
-        set_temp(override_temp, skip_override_detection=True)
+        _start_override(override_temp, 12)
         send_telegram(
             f"\U0001f525 Heat override enabled via web"
             f" (target {override_temp}\u00b0C for 12h)"
         )
     elif action == "cold":
         override_temp = int(os.getenv("TEMP_LOW", "0")) + 0.5
-        manual_override_endtime = datetime.datetime.now(
-            tz=datetime.UTC
-        ) + datetime.timedelta(hours=24)
-        set_temp(override_temp, skip_override_detection=True)
+        _start_override(override_temp, 24)
         send_telegram(
             f"\u2744\ufe0f Cold override enabled via web"
             f" (target {override_temp}\u00b0C for 24h)"
@@ -1063,6 +1071,7 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
                 {"time": t, "temp": v} for t, v in sorted(weather_forecast.items())
             ],
             "cooling_k": cooling_k,
+            "heating_rate": _heating_rate(),
             "predicted_deadline": predicted_deadline,
             "predicted_temps": _predict_future_temps(),
         }
@@ -1236,12 +1245,8 @@ def _handle_telegram_override(chat_id: str) -> None:  # noqa: ARG001  # pylint: 
 
 def _handle_telegram_heat(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /heat and /hot commands -- start heating."""
-    global manual_override_endtime  # noqa: PLW0603
     override_temp = int(os.getenv("TEMP_HIGH", "0")) - 0.5
-    manual_override_endtime = datetime.datetime.now(
-        tz=datetime.UTC
-    ) + datetime.timedelta(hours=12)
-    set_temp(override_temp, skip_override_detection=True)
+    _start_override(override_temp, 12)
     pool = cache.get("pool")
     current = pool["current_temp"] if pool else "?"
     send_telegram(
@@ -1252,12 +1257,8 @@ def _handle_telegram_heat(chat_id: str) -> None:  # noqa: ARG001  # pylint: disa
 
 def _handle_telegram_cold(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /cold command -- set TEMP_LOW for 24h."""
-    global manual_override_endtime  # noqa: PLW0603
     override_temp = int(os.getenv("TEMP_LOW", "0")) + 0.5
-    manual_override_endtime = datetime.datetime.now(
-        tz=datetime.UTC
-    ) + datetime.timedelta(hours=24)
-    set_temp(override_temp, skip_override_detection=True)
+    _start_override(override_temp, 24)
     pool = cache.get("pool")
     current = pool["current_temp"] if pool else "?"
     send_telegram(
