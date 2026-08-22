@@ -16,7 +16,9 @@ COPY get_certificate.py .
 RUN python get_certificate.py
 
 COPY templates ./templates
-COPY app.py ./
+# Every module app.py imports, or the container dies at startup.
+# test_dockerfile.py keeps this list in step with the imports.
+COPY app.py pricing.py scheduling.py storage.py thermal.py ./
 
 USER 1001
 CMD ["python", "app.py"]
