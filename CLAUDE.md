@@ -93,6 +93,8 @@ ruff format .
 
 Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to avoid external API calls. Global state is reset between tests via an autouse fixture.
 
+`SpaSimulator` (bottom of `test_app.py`) runs the real `calculate_schedule()` + `control()` loop every simulated 15 minutes against a thermal model (Newton cooling, `heating_rate` °C/h, readings quantised to the spa's 0.5°C sensor resolution). It patches `app.datetime` with a controllable clock — patching only app's namespace, not the global `datetime` module — and reproduces spot-hinta.fi's publication schedule (tomorrow's prices appear at 14:00), which is what surfaces re-planning bugs that static single-call tests cannot. `sim.cheapest_possible_cost()` gives the brute-force optimum for the hours actually consumed, so tests can assert on cost, not just on which hours were picked. Two known defects (daytime top-offs, setpoint cycling from 0.5°C sensor ticks) are pinned as `xfail(strict=True)` — fixing them turns the markers into failures, which is the signal to remove them.
+
 ## External APIs
 
 1. **spot-hinta.fi** (`https://api.spot-hinta.fi/Today` and `/DayForward`): Returns 15-min interval Nordpool spot prices with tax for Finland. `update_prices()` fetches both endpoints and averages to PRICE_INTERVAL-minute slots.

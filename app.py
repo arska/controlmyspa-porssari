@@ -665,7 +665,11 @@ def calculate_schedule() -> None:
     candidates = _candidate_hours(
         future_prices, now_local, deadline_hours, hours_needed
     )
-    sorted_hours = sorted(candidates, key=candidates.get)
+    # Cheapest first; equal prices resolve to the earliest hour rather than to
+    # dict insertion order, which is arbitrary for prices restored from SQLite.
+    sorted_hours = sorted(
+        candidates, key=lambda k: (candidates[k], datetime.datetime.fromisoformat(k))
+    )
 
     heated_in_window = _heated_hours_in_window(tz, temp_high)
     remaining_budget = max(0, max_hours - len(heated_in_window))
