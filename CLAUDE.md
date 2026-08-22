@@ -12,7 +12,8 @@ Flask app in `app.py`, with the pure logic split out:
 - `scheduling.py` — the policy: which hours to heat. `plan(prices, history, now, policy, booked)` returns a `Plan` (the hours plus the reason, deadline and budget behind them). Takes the moment to plan for as an argument, so stored history can be replayed through it
 - `thermal.py` — the physics: cooling-constant and heating-rate measurement, and temperature/time predictions. No globals, no clock, no env; the caller passes history, constants and an `outside_at(hours)` callable
 - `pricing.py` — spot price fetching, hourly aggregation with margins, the in-memory retention window, and cheapest-first ordering
-- `app.py` — state, persistence, routes, the Telegram bot and the spa device I/O. It owns every mutable global and calls the modules above
+- `storage.py` — the SQLite tables. A `Store` owns its connection and lock; a store with no path is disabled and every method is a no-op, which is how local dev runs without `/data`. Nothing outside this module touches SQLite
+- `app.py` — state, routes, the Telegram bot and the spa device I/O. It owns every mutable global and calls the modules above
 
 Temperature and price history are persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
 - `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi. Fetched prices are merged over remembered ones and pruned to the last `PRICE_MEMORY_HOURS` (168h / 7 days) so past hours stay on the chart; the `price_history` SQLite table keeps every price forever (source of truth, backfilled into memory on startup) for retroactive evaluation of the scheduling algorithm
@@ -100,7 +101,7 @@ ruff format .
 
 ## Testing
 
-`test_scheduling.py` covers the policy directly: no Flask app, no globals, no clock patching, every case planned for a fixed instant.
+`test_scheduling.py` and `test_storage.py` cover the policy and the database directly: no Flask app, no globals, no clock patching. Scheduling cases are planned for fixed instants; storage cases run against a real SQLite file in `tmp_path`.
 
 Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to avoid external API calls. Global state is reset between tests via an autouse fixture.
 
