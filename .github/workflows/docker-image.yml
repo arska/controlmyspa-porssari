@@ -18,6 +18,19 @@ jobs:
       - name: Lint and test with nox
         run: uvx nox -s ruff pylint tests
 
+  smoke:
+    runs-on: ubuntu-latest
+    name: "docker smoke test"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.0.1
+        with:
+          python-version: "3.14"
+      # Builds the image and runs it: an image that cannot start must never
+      # reach the cluster, where it only shows up as a rollout timing out.
+      - name: Build and run the image
+        run: uvx nox -s docker
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -35,7 +48,7 @@ jobs:
           merged: "${{ github.event.pull_request.merged }}"
 
   deploy:
-    needs: [test, build]
+    needs: [test, smoke, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

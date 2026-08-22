@@ -68,6 +68,7 @@ TELEGRAM_WEBHOOK_URL # Optional base URL for Telegram webhook registration (e.g.
 - **Test-driven development**: Write tests first, then implement. Always run tests after every change.
 - **Always format before committing**: CI checks both `ruff check` AND `ruff format --check` — formatting violations fail the build.
 - **Always verify**: Run `uvx nox -s ruff pylint tests` before considering any change complete.
+- **New module? Add it to the Dockerfile.** The image copies named files, not the whole tree. `test_dockerfile.py` fails if an imported module is missing, and `nox -s docker` builds the image and runs it — CI runs both, and the deploy waits on them.
 
 ## Development Commands
 
