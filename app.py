@@ -9,7 +9,6 @@ import collections
 import datetime
 import functools
 import logging
-import math
 import os
 import pathlib
 import sqlite3
@@ -30,6 +29,7 @@ from sentry_sdk.integrations.flask import FlaskIntegration
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 import pricing
+import scheduling
 import thermal
 
 if TYPE_CHECKING:
@@ -511,184 +511,49 @@ def predict_time_to_temp(target_temp: float, current_temp: float) -> float:
     return thermal.hours_until(target_temp, current_temp, cooling_k, _outside_temp_in)
 
 
-def _heated_hours_in_window(tz: ZoneInfo, temp_high: int) -> set[str]:
-    """Count distinct hours heated in the current 14:00-14:00 budget window."""
-    now_local = datetime.datetime.now(tz)
-    window_start = now_local.replace(hour=14, minute=0, second=0, microsecond=0)
-    if now_local.hour < 14:  # noqa: PLR2004
-        window_start -= datetime.timedelta(days=1)
-    window_start_utc = window_start.astimezone(datetime.UTC)
-    heated: set[str] = set()
-    for entry in temperature_history:
-        entry_time = datetime.datetime.fromisoformat(entry["time"])
-        if entry_time >= window_start_utc and entry["desired_temp"] >= temp_high:
-            entry_local = entry_time.astimezone(tz)
-            heated.add(
-                entry_local.replace(minute=0, second=0, microsecond=0).isoformat()
-            )
-    return heated
-
-
-def _candidate_hours(
-    future_prices: dict[str, float],
-    now_local: datetime.datetime,
-    deadline_hours: float,
-    hours_needed: int,
-) -> dict[str, float]:
-    """Return price hours within the deadline, falling back to all future prices."""
-    if deadline_hours <= 0:
-        return future_prices
-    deadline_dt = now_local + datetime.timedelta(hours=deadline_hours)
-    within = {
-        k: v
-        for k, v in future_prices.items()
-        if datetime.datetime.fromisoformat(k) <= deadline_dt
-    }
-    return within if len(within) >= hours_needed else future_prices
-
-
-def _hours_needed_at(
-    current_temp: float, start_dt: datetime.datetime, temp_high: float
-) -> int:
-    """Hours of heating needed to reach TEMP_HIGH from a block starting at start_dt.
-
-    The pool cools until the block starts, so it is sized against the
-    temperature it will have then, not the warmer one it has now.
-
-    Nothing is booked while the pool is within TEMP_DEADBAND of the target: the
-    spa's sensor resolves 0.5°C, so without a deadband every sensor tick books
-    a fresh hour of heating at whatever price happens to be cheapest next.
-    """
-    deadband = float(os.getenv("TEMP_DEADBAND", "1.0"))
-    now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
-    hours = (start_dt - now).total_seconds() / 3600
-    temp_then = thermal.temp_after(current_temp, hours, cooling_k, _outside_temp_in)
-    if temp_then > temp_high - deadband:
-        return 0
-    return math.ceil((temp_high - temp_then) / _heating_rate())
-
-
-def _can_wait_for_prices(
-    deadline_hours: float, future_prices: dict[str, float], now_local: datetime.datetime
-) -> bool:
-    """Whether the pool survives past the last known price hour.
-
-    spot-hinta.fi publishes tomorrow at ~14:00, so before then the cheapest
-    *known* hour is often an expensive one later today. If TEMP_MIN is not at
-    risk before the horizon runs out, booking can wait until the cheaper hours
-    are actually visible.
-    """
-    if deadline_hours <= 0:
-        return False
-    horizon = max(datetime.datetime.fromisoformat(k) for k in future_prices)
-    hours_to_horizon = (horizon - now_local).total_seconds() / 3600 + 1
-    return deadline_hours > hours_to_horizon
-
-
-def _size_and_pick(
-    future_prices: dict[str, float],
-    now_local: datetime.datetime,
-    deadline_hours: float,
-    current_temp: float,
-    temp_high: float,
-) -> tuple[list[str], int]:
-    """Pick the cheapest hours, sizing the block from its own start time.
-
-    Sizing and picking depend on each other — a bigger block may start earlier,
-    and an earlier start needs fewer hours — so this iterates to a fixed point
-    (at most a few rounds; the block only ever grows).
-    """
-    hours_needed = _hours_needed_at(current_temp, now_local, temp_high)
-    ordered: list[str] = []
-    for _ in range(3):
-        candidates = _candidate_hours(
-            future_prices, now_local, deadline_hours, max(hours_needed, 1)
-        )
-        ordered = pricing.cheapest_first(candidates)
-        block = ordered[: max(hours_needed, 1)]
-        start = min(datetime.datetime.fromisoformat(k) for k in block)
-        resized = _hours_needed_at(current_temp, start, temp_high)
-        if resized == hours_needed:
-            break
-        hours_needed = resized
-    return ordered, hours_needed
-
-
 def calculate_schedule() -> None:
-    """Schedule heating based on cooling model and electricity prices.
+    """Decide which hours to heat and record the decision.
 
-    Predicts when the pool will drop to TEMP_MIN, then picks the cheapest
-    hours before that deadline. Capped by HEATING_HOURS per 14:00-14:00
-    budget window.
+    Owns the state; scheduling.plan() owns the policy.
     """
     global heating_schedule  # noqa: PLW0603
-    tz = ZoneInfo("Europe/Helsinki")
-    now_local = datetime.datetime.now(tz)
-    temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    temp_min = float(os.getenv("TEMP_MIN", "34"))
-    max_hours = int(os.getenv("HEATING_HOURS", "6"))
-
-    if not temperature_history:
-        # On startup there is no reading yet. Assuming TEMP_MIN would look like
-        # an emergency and book heating in whatever hour is cheapest right now;
-        # the first control() cycle supplies a real reading moments later.
-        APP.logger.info("no temperature reading yet, not scheduling")
-        return
-
     estimate_cooling_rate()
     estimate_heating_rate()
-
-    current_temp = temperature_history[-1]["current_temp"]
-    deadline_hours = predict_time_to_temp(temp_min, current_temp)
-
-    current_hour = now_local.replace(minute=0, second=0, microsecond=0)
-    future_prices = {
-        k: v
-        for k, v in hourly_prices.items()
-        if datetime.datetime.fromisoformat(k) >= current_hour
-    }
-
-    if not future_prices:
-        heating_schedule = set()
-        APP.logger.warning("no future prices available, clearing schedule")
-        return
-
-    if _can_wait_for_prices(deadline_hours, future_prices, now_local):
-        # Keep what is already booked — deferring must not cancel an hour that
-        # is about to start — but book nothing new until better prices arrive.
-        heating_schedule = {k for k in heating_schedule if k in future_prices}
-        APP.logger.info(
-            "waiting for more prices (deadline %.1fh out), keeping %d booked hours",
-            deadline_hours,
-            len(heating_schedule),
-        )
-        return
-
-    sorted_hours, hours_needed = _size_and_pick(
-        future_prices, now_local, deadline_hours, current_temp, temp_high
+    policy = scheduling.Policy(
+        temp_high=int(os.getenv("TEMP_HIGH", "0")),
+        temp_min=float(os.getenv("TEMP_MIN", "34")),
+        max_hours=int(os.getenv("HEATING_HOURS", "6")),
+        deadband=float(os.getenv("TEMP_DEADBAND", "1.0")),
+        cooling_k=cooling_k,
+        heating_rate=_heating_rate(),
+        outside_at=_outside_temp_in,
     )
-    heated_in_window = _heated_hours_in_window(tz, temp_high)
-    remaining_budget = max(0, max_hours - len(heated_in_window))
-
-    pick_count = min(hours_needed, remaining_budget)
-    heating_schedule = set(sorted_hours[:pick_count])
-
-    if hours_needed > remaining_budget:
+    decision = scheduling.plan(
+        hourly_prices,
+        list(temperature_history),
+        datetime.datetime.now(ZoneInfo("Europe/Helsinki")),
+        policy,
+        heating_schedule,
+    )
+    heating_schedule = decision.hours
+    if decision.hours_needed > policy.max_hours - decision.budget_used:
         APP.logger.warning(
-            "budget exhausted: need %d hours but only %d remaining in window"
-            " (pool may drop below TEMP_MIN)",
-            hours_needed,
-            remaining_budget,
+            "budget exhausted: need %d hours, %d of %d used in this window",
+            decision.hours_needed,
+            decision.budget_used,
+            policy.max_hours,
         )
-
     APP.logger.info(
-        "schedule: %d hours (need %d, budget %d/%d, deadline %.1fh, k=%.5f): %s",
+        "schedule: %d hours (%s; need %d, budget %d/%d, deadline %.1fh,"
+        " k=%.5f, rate=%.2f): %s",
         len(heating_schedule),
-        hours_needed,
-        len(heated_in_window),
-        max_hours,
-        deadline_hours,
+        decision.reason,
+        decision.hours_needed,
+        decision.budget_used,
+        policy.max_hours,
+        decision.deadline_hours,
         cooling_k,
+        policy.heating_rate,
         sorted(heating_schedule),
     )
 
