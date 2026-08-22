@@ -1,8 +1,11 @@
 """Tests for controlmyspa-porssari application."""
 
 import datetime
+import os
 import sqlite3
 import time
+import typing
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
@@ -29,6 +32,7 @@ def _reset_state():
     app_module.hourly_prices = {}
     app_module.heating_schedule = set()
     app_module.cooling_k = app_module.DEFAULT_COOLING_K
+    app_module.heating_rate = app_module.DEFAULT_HEATING_RATE
     app_module.weather_forecast = {}
     yield
 
@@ -129,6 +133,15 @@ class TestTemperatureAPI:
         assert data["temp_high"] == 37
         assert data["temp_low"] == 27
 
+    def test_returns_the_measured_rates(self, client):
+        """The API exposes both estimated constants, not just cooling."""
+        app_module.cooling_k = 0.0041
+        app_module.heating_rate = 1.7
+        resp = client.get("/api/temperatures")
+        data = resp.get_json()
+        assert data["cooling_k"] == pytest.approx(0.0041)
+        assert data["heating_rate"] == pytest.approx(1.7)
+
     def test_returns_outside_temp(self, client):
         """Returns the latest outside temperature."""
         app_module.latest_outside_temp = 7.5
@@ -137,8 +150,9 @@ class TestTemperatureAPI:
         assert data["outside_temp"] == 7.5
 
     def test_history_maxlen(self, client):
-        """Temperature history respects 999-point max."""
-        for i in range(1100):
+        """Temperature history is a bounded ring buffer, a week deep."""
+        capacity = app_module.temperature_history.maxlen
+        for i in range(capacity + 100):
             app_module.temperature_history.append(
                 {
                     "time": f"2024-01-01T{i:05d}",
@@ -146,7 +160,7 @@ class TestTemperatureAPI:
                     "desired_temp": 37,
                 }
             )
-        assert len(app_module.temperature_history) == 999
+        assert len(app_module.temperature_history) == capacity
 
 
 # --- Override API tests ---
@@ -652,6 +666,101 @@ class TestTelegram:
             app_module.check_stale_temperature()
         mock_tg.assert_called_once()
         assert "stuck" in mock_tg.call_args[0][0].lower()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_no_alert_when_a_heating_block_has_just_started(self, mock_tg):
+        """A night of quiet cooling must not read as a stuck heater.
+
+        Replays 19 Aug: three hours at a steady 35.5°C (the pool loses 0.26°C,
+        which the spa's 0.5°C sensor cannot show), then the 04:00 heating block
+        begins. The old check switched to its 3h heating window the moment the
+        setpoint went up and judged the pool against hours of cooling.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(24):
+            t = now - datetime.timedelta(minutes=185 - i * 7.5)
+            app_module.temperature_history.append(
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 35.5,
+                    "desired_temp": 10.0,
+                    "outside_temp": 15.0,
+                }
+            )
+        for minutes in (5, 0):  # heating just started
+            app_module.temperature_history.append(
+                {
+                    "time": (now - datetime.timedelta(minutes=minutes)).isoformat(),
+                    "current_temp": 35.5,
+                    "desired_temp": 37.0,
+                    "outside_temp": 15.0,
+                }
+            )
+
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_no_alert_while_a_pool_cools_as_slowly_as_expected(self, mock_tg):
+        """A pool losing 0.26°C in 12h is behaving, not stuck.
+
+        The model expects little movement in summer, so a flat 0.5°C threshold
+        would report every warm night as a dead gateway.
+        """
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(49):
+            t = now - datetime.timedelta(minutes=725 - i * 15)
+            app_module.temperature_history.append(
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 35.5 - i * 0.005,
+                    "desired_temp": 10.0,
+                    "outside_temp": 22.0,  # warm night: barely any heat loss
+                }
+            )
+        app_module.cooling_k = 0.004
+
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+
+        mock_tg.assert_not_called()
+
+    @patch.dict(
+        "os.environ",
+        {"TELEGRAM_BOT_TOKEN": "tok", "TELEGRAM_CHAT_ID": "123", "TEMP_HIGH": "37"},
+    )
+    @patch("app.send_telegram")
+    def test_alerts_when_a_full_heating_block_moves_nothing(self, mock_tg):
+        """90 minutes of heating with no rise is a real fault."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        for i in range(13):
+            t = now - datetime.timedelta(minutes=95 - i * 7.5)
+            app_module.temperature_history.append(
+                {
+                    "time": t.isoformat(),
+                    "current_temp": 34.0,
+                    "desired_temp": 37.0,
+                    "outside_temp": 15.0,
+                }
+            )
+
+        with app_module.APP.app_context():
+            app_module.check_stale_temperature()
+
+        mock_tg.assert_called_once()
+        message = mock_tg.call_args[0][0]
+        assert "stuck" in message.lower()
+        assert "expected" in message.lower()
 
     @patch.dict(
         "os.environ",
@@ -1195,6 +1304,45 @@ class TestInitialize:
         mock_tg.assert_called_once()
         assert "start" in mock_tg.call_args[0][0].lower()
 
+    @patch("app.scheduler")
+    @patch("app.send_telegram")
+    def test_schedules_planning_independently_of_prices(self, mock_tg, mock_scheduler):
+        """calculate_schedule() runs on its own timer, not off the price fetch.
+
+        A spot-hinta.fi outage must not freeze the thermal estimates or stop
+        the pool being re-planned against the prices already in memory.
+        """
+        app_module.initialize()
+        job_ids = {
+            call.kwargs.get("id") for call in mock_scheduler.add_job.call_args_list
+        }
+        assert "calculate_schedule" in job_ids
+        assert {"control", "update_prices", "update_weather"} <= job_ids
+
+    @patch("app.requests.get")
+    @patch("app.calculate_schedule")
+    def test_update_prices_does_not_drive_scheduling(self, mock_schedule, mock_get):
+        """Fetching prices stores them; planning is somebody else's job."""
+        today_data = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        today_response = MagicMock()
+        today_response.json.return_value = today_data
+        today_response.raise_for_status = MagicMock()
+        tomorrow_response = MagicMock()
+        tomorrow_response.json.return_value = []
+        tomorrow_response.raise_for_status = MagicMock()
+        mock_get.side_effect = [today_response, tomorrow_response]
+
+        with app_module.APP.app_context():
+            app_module.update_prices()
+
+        assert "2026-07-18T10:00:00+03:00" in app_module.hourly_prices
+        mock_schedule.assert_not_called()
+
     @patch.dict(
         "os.environ",
         {
@@ -1269,7 +1417,7 @@ class TestSQLitePersistence:
         )
         now = datetime.datetime.now(tz=datetime.UTC)
         recent = (now - datetime.timedelta(hours=1)).isoformat()
-        old = (now - datetime.timedelta(hours=72)).isoformat()
+        old = (now - datetime.timedelta(hours=100)).isoformat()
         conn.execute(
             "INSERT INTO temperature_readings "
             "(time, current_temp, desired_temp, outside_temp) "
@@ -1289,10 +1437,50 @@ class TestSQLitePersistence:
         with app_module.APP.app_context():
             app_module.init_db()
 
-        # Only the recent row (within 48h) should be backfilled
-        assert len(app_module.temperature_history) == 1
-        assert app_module.temperature_history[0]["current_temp"] == 35.0
-        assert app_module.temperature_history[0]["outside_temp"] == 5.0
+        # Both rows load: the estimators need days of history, not hours
+        assert len(app_module.temperature_history) == 2
+        assert app_module.temperature_history[0]["current_temp"] == 30.0
+        assert app_module.temperature_history[-1]["current_temp"] == 35.0
+        assert app_module.temperature_history[-1]["outside_temp"] == 5.0
+        app_module.db_conn.close()
+
+    def test_startup_backfill_is_capped_at_deque_capacity(self, tmp_path, monkeypatch):
+        """Backfill loads the newest readings and stops at the buffer size."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE temperature_readings "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "time TEXT NOT NULL, current_temp REAL NOT NULL, "
+            "desired_temp REAL NOT NULL, outside_temp REAL)"
+        )
+        now = datetime.datetime.now(tz=datetime.UTC)
+        capacity = app_module.temperature_history.maxlen
+        for i in range(capacity + 50):
+            conn.execute(
+                "INSERT INTO temperature_readings "
+                "(time, current_temp, desired_temp, outside_temp) VALUES (?, ?, ?, ?)",
+                (
+                    (
+                        now - datetime.timedelta(minutes=8 * (capacity + 50 - i))
+                    ).isoformat(),
+                    30.0 + i % 5,
+                    10.0,
+                    5.0,
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        assert len(app_module.temperature_history) == capacity
+        newest = datetime.datetime.fromisoformat(
+            app_module.temperature_history[-1]["time"]
+        )
+        assert (now - newest) < datetime.timedelta(minutes=10)
         app_module.db_conn.close()
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
@@ -1343,8 +1531,8 @@ class TestSQLitePersistence:
         )
         tz = ZoneInfo("Europe/Helsinki")
         now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
-        recent = (now - datetime.timedelta(hours=5)).isoformat()
-        old = (now - datetime.timedelta(hours=100)).isoformat()
+        recent = (now - datetime.timedelta(hours=100)).isoformat()
+        old = (now - datetime.timedelta(hours=200)).isoformat()
         conn.execute(
             "INSERT INTO price_history (time, price) VALUES (?, ?)", (recent, 0.07)
         )
@@ -1460,7 +1648,7 @@ class TestUpdatePrices:
         """update_prices() forgets in-memory prices older than the chart window."""
         tz = ZoneInfo("Europe/Helsinki")
         now = datetime.datetime.now(tz).replace(minute=0, second=0, microsecond=0)
-        stale = (now - datetime.timedelta(hours=100)).isoformat()
+        stale = (now - datetime.timedelta(hours=200)).isoformat()
         app_module.hourly_prices = {stale: 0.03}
 
         today_data = [
@@ -1803,10 +1991,11 @@ class TestCalculateSchedule:
                 "outside_temp": 20.0,
             }
         )
-        # Create prices: hours 0-11 from now, hour 5 is cheapest
+        # A full day of prices, hour 5 cheapest: with only a few hours of
+        # prices the scheduler would rightly wait for the rest to publish.
         now_local = datetime.datetime.now(tz)
         prices = {}
-        for i in range(12):
+        for i in range(24):
             dt = (now_local + datetime.timedelta(hours=i)).replace(
                 minute=0, second=0, microsecond=0
             )
@@ -1818,6 +2007,271 @@ class TestCalculateSchedule:
         assert cheapest_key in app_module.heating_schedule
         # hours_needed = ceil((37-35)/2.5) = 1 (based on current temp, not TEMP_MIN)
         assert len(app_module.heating_schedule) == 1
+
+    ENV: typing.ClassVar = {
+        "HEATING_HOURS": "6",
+        "TEMP_HIGH": "37",
+        "TEMP_MIN": "34",
+        "HEATING_RATE": "1.6",
+    }
+
+    @staticmethod
+    def _seed(current_temp, hours, price_at=None):
+        """Seed one reading plus `hours` of hourly prices; return the hour keys."""
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.latest_outside_temp = 15.0
+        app_module.temperature_history.append(
+            {
+                "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                "current_temp": current_temp,
+                "desired_temp": 10.0,
+                "outside_temp": 15.0,
+            }
+        )
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        keys = [
+            (current_hour + datetime.timedelta(hours=i)).isoformat()
+            for i in range(hours)
+        ]
+        price_at = price_at or {}
+        app_module.hourly_prices = {
+            k: price_at.get(i, 0.20) for i, k in enumerate(keys)
+        }
+        return keys
+
+    @patch.dict("os.environ", ENV)
+    def test_no_schedule_before_the_first_reading(self):
+        """A restart must not book heating before any temperature is known."""
+        self._seed(35.0, 24)
+        app_module.temperature_history.clear()  # as on a cold start
+        app_module.calculate_schedule()
+
+        assert app_module.heating_schedule == set()
+
+    @patch.dict("os.environ", ENV)
+    def test_waits_when_the_deadline_is_beyond_the_price_horizon(self):
+        """Nothing is booked while cheaper hours may still be published.
+
+        Only 6 hours of prices are known and TEMP_MIN is ~13h away, so every
+        known hour may be dearer than what publishes at 14:00.
+        """
+        self._seed(35.5, 6, price_at={3: 0.05})
+        app_module.calculate_schedule()
+
+        assert app_module.heating_schedule == set()
+
+    @patch.dict("os.environ", ENV)
+    def test_waiting_keeps_hours_already_booked(self):
+        """Deferring must not cancel a block that is about to start."""
+        keys = self._seed(35.5, 6, price_at={3: 0.05})
+        app_module.heating_schedule = {keys[1]}
+        app_module.calculate_schedule()
+
+        assert app_module.heating_schedule == {keys[1]}
+
+    @patch.dict("os.environ", ENV)
+    def test_a_sensor_tick_below_target_does_not_book_heating(self):
+        """A 0.2°C dip stays inside TEMP_DEADBAND, so no hour is booked.
+
+        The spa reports in 0.5°C steps; without a deadband every step down
+        books a fresh hour at whatever price happens to be cheapest next.
+        """
+        self._seed(36.8, 24, price_at={1: 0.01})
+        app_module.calculate_schedule()
+
+        assert app_module.heating_schedule == set()
+
+    @patch.dict("os.environ", ENV)
+    def test_sizes_the_block_from_the_temperature_at_its_start(self):
+        """Hours are sized from the pool's temperature when heating begins.
+
+        The pool is 0.8°C below target now — one hour's worth — but the cheap
+        hours are 10h away, by which time it has cooled enough to need two.
+        """
+        keys = self._seed(36.2, 24, price_at={10: 0.01, 11: 0.02})
+        app_module.calculate_schedule()
+
+        assert app_module.heating_schedule == {keys[10], keys[11]}
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "1.6",
+        },
+    )
+    def test_rejects_a_cheaper_hour_beyond_the_deadline(self):
+        """A bargain after the TEMP_MIN deadline loses to hours before it."""
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.latest_outside_temp = 15.0
+        app_module.temperature_history.append(
+            {
+                "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                "current_temp": 34.2,  # ~2h of slack before TEMP_MIN
+                "desired_temp": 10.0,
+                "outside_temp": 15.0,
+            }
+        )
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        hour = {i: (current_hour + datetime.timedelta(hours=i)) for i in range(24)}
+        prices = {dt.isoformat(): 0.20 for dt in hour.values()}
+        prices[hour[0].isoformat()] = 0.05
+        prices[hour[1].isoformat()] = 0.06
+        prices[hour[20].isoformat()] = 0.001  # cheapest, but far too late
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+
+        assert hour[20].isoformat() not in app_module.heating_schedule
+        assert app_module.heating_schedule == {
+            hour[0].isoformat(),
+            hour[1].isoformat(),
+        }
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "0.5",
+        },
+    )
+    def test_looks_past_the_deadline_when_it_cannot_be_met(self):
+        """With too few hours before the deadline, the whole future is fair game.
+
+        The pool cannot be brought up in time either way, so the scheduler
+        stops honouring the deadline rather than buying expensive hours that
+        would not save it.
+        """
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.latest_outside_temp = 15.0
+        app_module.temperature_history.append(
+            {
+                "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                "current_temp": 34.2,
+                "desired_temp": 10.0,
+                "outside_temp": 15.0,
+            }
+        )
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        hour = {i: (current_hour + datetime.timedelta(hours=i)) for i in range(24)}
+        prices = {dt.isoformat(): 0.20 for dt in hour.values()}
+        prices[hour[20].isoformat()] = 0.001
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+
+        # 6 hours needed at 0.5°C/h, only 3 before the deadline -> fall back
+        assert hour[20].isoformat() in app_module.heating_schedule
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "1.6",
+        },
+    )
+    def test_chooses_the_cheapest_set_on_a_jagged_curve(self):
+        """The chosen hours are exactly the cheapest available, not merely cheap."""
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.latest_outside_temp = 15.0
+        app_module.temperature_history.append(
+            {
+                "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                "current_temp": 32.5,  # below TEMP_MIN: every future hour qualifies
+                "desired_temp": 10.0,
+                "outside_temp": 15.0,
+            }
+        )
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        prices = {
+            (current_hour + datetime.timedelta(hours=i)).isoformat(): c / 100
+            for i, c in enumerate(NORDPOOL_DAY)
+        }
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+
+        # ceil((37 - 32.5) / 1.6) = 3 hours
+        assert app_module.heating_schedule == set(sorted(prices, key=prices.get)[:3])
+
+    @patch.dict(
+        "os.environ",
+        {
+            "HEATING_HOURS": "6",
+            "TEMP_HIGH": "37",
+            "TEMP_MIN": "34",
+            "HEATING_RATE": "1.6",
+        },
+    )
+    def test_equal_prices_resolve_to_the_earliest_hours(self):
+        """Ties go to the earliest hour, whatever order the prices arrived in."""
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.latest_outside_temp = 15.0
+        app_module.temperature_history.append(
+            {
+                "time": datetime.datetime.now(tz=datetime.UTC).isoformat(),
+                "current_temp": 32.5,
+                "desired_temp": 10.0,
+                "outside_temp": 15.0,
+            }
+        )
+        current_hour = datetime.datetime.now(tz).replace(
+            minute=0, second=0, microsecond=0
+        )
+        hours = [current_hour + datetime.timedelta(hours=i) for i in range(12)]
+        # Insert newest first: dict order is the opposite of chronological order
+        app_module.hourly_prices = {dt.isoformat(): 0.05 for dt in reversed(hours)}
+        app_module.calculate_schedule()
+
+        assert app_module.heating_schedule == {h.isoformat() for h in hours[:3]}
+
+    @patch.dict(
+        "os.environ",
+        {"HEATING_HOURS": "6", "TEMP_HIGH": "37", "TEMP_MIN": "34"},
+    )
+    def test_default_heating_rate_books_enough_hours(self):
+        """The default heating rate books 2 hours to close a 2°C gap.
+
+        Measured production rate is ~1.6°C/h. Booking a single hour (as a
+        2.5°C/h estimate would) leaves the pool short, forcing a top-off in
+        whatever hour is cheapest *next* — typically a pricier one.
+        """
+        os.environ.pop("HEATING_RATE", None)
+        now = datetime.datetime.now(tz=datetime.UTC)
+        tz = ZoneInfo("Europe/Helsinki")
+        app_module.cooling_k = 0.006
+        app_module.latest_outside_temp = 20.0
+        app_module.temperature_history.append(
+            {
+                "time": now.isoformat(),
+                "current_temp": 35.0,
+                "desired_temp": 10.0,
+                "outside_temp": 20.0,
+            }
+        )
+        now_local = datetime.datetime.now(tz)
+        prices = {}
+        for i in range(24):
+            dt = (now_local + datetime.timedelta(hours=i)).replace(
+                minute=0, second=0, microsecond=0
+            )
+            prices[dt.isoformat()] = {5: 0.001, 6: 0.002}.get(i, 0.05)
+        app_module.hourly_prices = prices
+        app_module.calculate_schedule()
+
+        two_cheapest = set(sorted(prices, key=prices.get)[:2])
+        assert app_module.heating_schedule == two_cheapest
 
     @patch.dict(
         "os.environ",
@@ -1972,3 +2426,399 @@ class TestCalculateSchedule:
         app_module.calculate_schedule()
         # Pool is already at TEMP_HIGH — no heating needed
         assert len(app_module.heating_schedule) == 0
+
+
+# --- Scheduling simulation ---
+
+
+DAY_AHEAD_PUBLISH_HOUR = 14  # spot-hinta.fi publishes tomorrow's prices ~14:00
+
+
+class _Clock(datetime.datetime):
+    """A datetime whose now() returns a settable simulated instant."""
+
+    _now = datetime.datetime.now(tz=datetime.UTC)
+
+    @classmethod
+    def now(cls, tz=None):
+        """Return the simulated now, converted to tz when one is given."""
+        return cls._now.astimezone(tz) if tz else cls._now
+
+    @classmethod
+    def advance(cls, **kwargs):
+        """Move the simulated clock forward."""
+        cls._now += datetime.timedelta(**kwargs)
+
+
+def _fake_datetime_module():
+    """Build a stand-in for app's `datetime` import, with a controllable clock.
+
+    Patching app.datetime (rather than datetime.datetime globally) keeps the
+    simulated clock confined to the application module.
+    """
+    return SimpleNamespace(
+        datetime=_Clock, timedelta=datetime.timedelta, UTC=datetime.UTC
+    )
+
+
+class SpaSimulator:
+    """Run the real scheduler through simulated time against a thermal model.
+
+    Each 15-minute tick calls calculate_schedule() and control() exactly as
+    production does, then advances a pool model: heating adds `heating_rate`
+    per hour while the setpoint is above the pool, cooling follows the same
+    Newton's law the app uses. Readings are quantised to 0.5°C to reproduce the
+    spa's sensor resolution, which is what makes the pool flap around the
+    setpoint in production.
+    """
+
+    TICK_HOURS = 0.25
+
+    def __init__(  # noqa: PLR0913
+        self,
+        prices,
+        *,
+        start_temp,
+        outside=15.0,
+        heating_rate=1.6,
+        cooling_k=0.004,
+        temp_high=37,
+        day_ahead_known=False,
+    ):
+        """Set up the pool model and the price curve it is scheduled against."""
+        self.prices = prices
+        self.day_ahead_known = day_ahead_known
+        self.window = None
+        self.temp = start_temp
+        self.outside = outside
+        self.heating_rate = heating_rate
+        self.cooling_k = cooling_k
+        self.temp_high = temp_high
+        self.heating_hours = 0.0
+        self.cost = 0.0
+        self.starts = 0  # times the setpoint went high (the blue line's steps)
+        self.min_temp = start_temp
+        self._setpoint_high = False
+
+    def _hour_key(self):
+        return (
+            _Clock.now(ZoneInfo("Europe/Helsinki"))
+            .replace(minute=0, second=0, microsecond=0)
+            .isoformat()
+        )
+
+    def set_temp(self, temp, *, skip_override_detection=False):
+        """Stand in for app.set_temp(): apply the setpoint, then step physics."""
+        setpoint_high = temp >= self.temp_high
+        if setpoint_high and not self._setpoint_high:
+            self.starts += 1
+        self._setpoint_high = setpoint_high
+        heating = temp > self.temp
+
+        if heating:
+            self.temp = min(self.temp + self.heating_rate * self.TICK_HOURS, temp)
+            self.heating_hours += self.TICK_HOURS
+            self.cost += self.TICK_HOURS * self.prices.get(self._hour_key(), 0.0)
+        else:
+            self.temp -= self.cooling_k * (self.temp - self.outside) * self.TICK_HOURS
+
+        self.min_temp = min(self.min_temp, self.temp)
+        app_module.temperature_history.append(
+            {
+                "time": _Clock.now(datetime.UTC).isoformat(),
+                "current_temp": round(self.temp * 2) / 2,  # 0.5°C sensor resolution
+                "desired_temp": float(temp),
+                "outside_temp": self.outside,
+            }
+        )
+
+    def _publish_prices(self):
+        """Expose only the prices spot-hinta.fi would have published by now.
+
+        Today's prices are always known; tomorrow's appear at 14:00. Before
+        that the scheduler can only choose among the remaining hours of today,
+        which is what makes an expensive morning hour look like the best
+        available option.
+        """
+        if self.day_ahead_known:
+            app_module.hourly_prices = dict(self.prices)
+            return
+        now_local = _Clock.now(ZoneInfo("Europe/Helsinki"))
+        horizon = now_local.date() + datetime.timedelta(
+            days=2 if now_local.hour >= DAY_AHEAD_PUBLISH_HOUR else 1
+        )
+        app_module.hourly_prices = {
+            k: v
+            for k, v in self.prices.items()
+            if datetime.datetime.fromisoformat(k).date() < horizon
+        }
+
+    def run(self, hours):
+        """Step scheduler + control for the given number of simulated hours."""
+        app_module.latest_outside_temp = self.outside
+        start = _Clock.now(ZoneInfo("Europe/Helsinki"))
+        self.window = (start, start + datetime.timedelta(hours=hours))
+        with (
+            patch("app.datetime", _fake_datetime_module()),
+            patch("app.set_temp", self.set_temp),
+        ):
+            for _ in range(int(hours / self.TICK_HOURS)):
+                self._publish_prices()
+                app_module.calculate_schedule()
+                app_module.control()
+                _Clock.advance(minutes=15)
+        return self
+
+    def cheapest_possible_cost(self):
+        """Cost of the same number of heating hours bought at the best prices.
+
+        Only hours inside the simulated window count, so the baseline is one
+        the scheduler could actually have picked.
+        """
+        start, end = self.window
+        cheapest = sorted(
+            v
+            for k, v in self.prices.items()
+            if start <= datetime.datetime.fromisoformat(k) < end
+        )
+        whole, part = divmod(self.heating_hours, 1)
+        return sum(cheapest[: int(whole)]) + part * cheapest[int(whole)]
+
+
+# Realistic Finnish day: cheap night trough, morning ramp, evening peak (c/kWh)
+NORDPOOL_DAY = [
+    16.0,
+    11.5,
+    10.8,
+    10.7,
+    10.6,
+    10.4,
+    12.9,
+    14.2,
+    16.0,
+    15.3,
+    14.6,
+    14.2,
+    15.0,
+    15.1,
+    16.4,
+    20.1,
+    18.6,
+    21.2,
+    23.6,
+    25.4,
+    25.9,
+    25.1,
+    22.6,
+    16.6,
+]
+
+
+def _price_curve(start, days=2, shape=None):
+    """Build {ISO local hour: EUR/kWh} from an hourly c/kWh shape."""
+    shape = NORDPOOL_DAY if shape is None else shape
+    return {
+        (start + datetime.timedelta(days=d, hours=i)).isoformat(): c / 100
+        for d in range(days)
+        for i, c in enumerate(shape)
+    }
+
+
+def _simulate(start_temp, *, hours=24, day_ahead_known=False, **kwargs):
+    """Run a simulation starting at midnight on a fixed date."""
+    start = datetime.datetime(
+        2026, 8, 20, 0, 0, tzinfo=ZoneInfo("Europe/Helsinki")
+    ) + datetime.timedelta(hours=kwargs.pop("start_hour", 0))
+    prices = _price_curve(
+        start.replace(hour=0), shape=kwargs.pop("shape", None), days=3
+    )
+    _Clock._now = start.astimezone(datetime.UTC)  # noqa: SLF001
+    app_module.heating_schedule = set()
+    return SpaSimulator(
+        prices, start_temp=start_temp, day_ahead_known=day_ahead_known, **kwargs
+    ).run(hours)
+
+
+@patch.dict(
+    "os.environ",
+    {"HEATING_HOURS": "6", "TEMP_HIGH": "37", "TEMP_LOW": "10", "TEMP_MIN": "34"},
+)
+class TestSchedulingSimulation:
+    """End-to-end scheduling behaviour over simulated time.
+
+    Static schedule tests only prove one decision in a frozen world. These run
+    the real calculate_schedule() + control() loop every 15 minutes against a
+    thermal model, which is where re-planning behaviour actually shows up.
+    """
+
+    def test_picks_the_cheapest_hours_when_the_whole_curve_is_known(self):
+        """With all prices known, heating lands in the night trough."""
+        sim = _simulate(35.5, day_ahead_known=True)
+        assert sim.heating_hours > 0
+        # Not exactly optimal: the cooling estimate starts at DEFAULT_COOLING_K
+        # until enough history accumulates, so the first block is sized a
+        # little long and its tail spills into a pricier hour.
+        assert sim.cost <= sim.cheapest_possible_cost() * 1.10
+
+    def test_pool_never_falls_below_temp_min(self):
+        """The safety floor holds across a full day from a cold-ish start."""
+        sim = _simulate(34.5)
+        assert sim.min_temp >= 34.0
+
+    def test_pool_recovers_from_below_temp_min(self):
+        """A pool starting under TEMP_MIN is heated back above it."""
+        sim = _simulate(33.0, hours=12)
+        assert sim.temp > 34.0
+
+    def test_respects_the_heating_hours_budget(self):
+        """Heating stays within HEATING_HOURS over a 14:00-14:00 window."""
+        sim = _simulate(33.0)
+        assert sim.heating_hours <= 6
+
+    def test_cost_stays_near_optimal_with_realistic_day_ahead_timing(self):
+        """Heating stays near the cheapest hours despite a truncated horizon.
+
+        Tomorrow's prices only publish at 14:00, so before then the cheapest
+        *known* hour is an expensive one later today. TEMP_MIN is not at risk
+        that soon, so the scheduler waits for the real trough to appear.
+        """
+        sim = _simulate(36.5, start_hour=6)
+        assert sim.cost <= sim.cheapest_possible_cost() * 1.10
+
+    def test_does_not_cycle_the_setpoint(self):
+        """A day should need a couple of heating blocks, not many short ones."""
+        sim = _simulate(36.5, start_hour=6)
+        assert sim.starts <= 3
+
+
+class TestHeatingRateEstimation:
+    """Tests for measuring the spa's heating rate from history."""
+
+    @staticmethod
+    def _stretch(start_time, temps, desired):
+        """Append readings 15 minutes apart with the given desired temp."""
+        for i, temp in enumerate(temps):
+            app_module.temperature_history.append(
+                {
+                    "time": (
+                        start_time + datetime.timedelta(minutes=15 * i)
+                    ).isoformat(),
+                    "current_temp": temp,
+                    "desired_temp": desired,
+                    "outside_temp": 15.0,
+                }
+            )
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37"})
+    def test_measures_the_rate_from_heating_stretches(self):
+        """Three uncapped stretches gaining 1.0°C/h estimate 1.0°C/h."""
+        base = datetime.datetime(2026, 8, 20, 0, 0, tzinfo=datetime.UTC)
+        for day in range(3):
+            start = base + datetime.timedelta(days=day)
+            self._stretch(start, [34.0, 34.25, 34.5, 34.75, 35.0], 37.0)
+            self._stretch(start + datetime.timedelta(hours=2), [35.0], 10.0)
+
+        assert app_module.estimate_heating_rate() == pytest.approx(1.0)
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37"})
+    def test_ignores_stretches_capped_at_the_setpoint(self):
+        """A stretch that reaches TEMP_HIGH understates the rate, so it is skipped."""
+        base = datetime.datetime(2026, 8, 20, 0, 0, tzinfo=datetime.UTC)
+        self._stretch(base, [36.5, 36.75, 37.0, 37.0, 37.0], 37.0)
+        self._stretch(base + datetime.timedelta(hours=2), [37.0], 10.0)
+
+        assert app_module.estimate_heating_rate() == app_module.DEFAULT_HEATING_RATE
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37"})
+    def test_falls_back_to_the_default_without_enough_stretches(self):
+        """One stretch is not enough evidence to move the estimate."""
+        base = datetime.datetime(2026, 8, 20, 0, 0, tzinfo=datetime.UTC)
+        self._stretch(base, [34.0, 34.5, 35.0, 35.5, 36.0], 37.0)
+        self._stretch(base + datetime.timedelta(hours=2), [36.0], 10.0)
+
+        assert app_module.estimate_heating_rate() == app_module.DEFAULT_HEATING_RATE
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37"})
+    def test_clamps_an_implausible_estimate(self):
+        """A 0.5°C sensor step over 15 minutes reads as 2°C/h; clamped, not trusted."""
+        base = datetime.datetime(2026, 8, 20, 0, 0, tzinfo=datetime.UTC)
+        for day in range(3):
+            start = base + datetime.timedelta(days=day)
+            self._stretch(start, [30.0, 33.0, 34.0], 37.0)  # 6°C/h
+            self._stretch(start + datetime.timedelta(hours=2), [34.0], 10.0)
+
+        assert app_module.estimate_heating_rate() == app_module.MAX_HEATING_RATE
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "HEATING_RATE": "2.2"})
+    def test_env_override_wins_over_the_measurement(self):
+        """An explicit HEATING_RATE is respected even once a rate is measured."""
+        app_module.heating_rate = 1.1
+        assert app_module._heating_rate() == pytest.approx(2.2)  # noqa: SLF001
+
+
+class TestHistoryAPI:
+    """Tests for the SQLite-backed history endpoint."""
+
+    @staticmethod
+    def _db(tmp_path, monkeypatch):
+        monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+    def test_returns_readings_and_prices_in_range(self, client, tmp_path, monkeypatch):
+        """The endpoint serves rows straight from SQLite, not the memory window."""
+        self._db(tmp_path, monkeypatch)
+        old = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
+        app_module.db_conn.execute(
+            "INSERT INTO temperature_readings "
+            "(time, current_temp, desired_temp, outside_temp) VALUES (?, ?, ?, ?)",
+            (old.isoformat(), 35.0, 37.0, 5.0),
+        )
+        app_module.db_conn.execute(
+            "INSERT INTO price_history (time, price) VALUES (?, ?)",
+            (old.astimezone(ZoneInfo("Europe/Helsinki")).isoformat(), 0.07),
+        )
+        app_module.db_conn.commit()
+
+        resp = client.get(
+            "/api/history",
+            query_string={
+                "from": (old - datetime.timedelta(days=1)).isoformat(),
+                "to": (old + datetime.timedelta(days=1)).isoformat(),
+            },
+        )
+        data = resp.get_json()
+        assert resp.status_code == 200
+        assert len(data["readings"]) == 1
+        assert data["readings"][0]["current_temp"] == 35.0
+        assert len(data["prices"]) == 1
+        assert data["prices"][0]["price"] == pytest.approx(0.07)
+        app_module.db_conn.close()
+
+    def test_excludes_rows_outside_the_range(self, client, tmp_path, monkeypatch):
+        """Rows outside from/to are not returned."""
+        self._db(tmp_path, monkeypatch)
+        old = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
+        app_module.db_conn.execute(
+            "INSERT INTO temperature_readings "
+            "(time, current_temp, desired_temp, outside_temp) VALUES (?, ?, ?, ?)",
+            (old.isoformat(), 35.0, 37.0, 5.0),
+        )
+        app_module.db_conn.commit()
+
+        resp = client.get("/api/history")  # defaults to the last 7 days
+        assert resp.get_json()["readings"] == []
+        app_module.db_conn.close()
+
+    def test_rejects_an_unparsable_timestamp(self, client, tmp_path, monkeypatch):
+        """A bad from/to is a client error, not a 500."""
+        self._db(tmp_path, monkeypatch)
+        resp = client.get("/api/history", query_string={"from": "yesterday"})
+        assert resp.status_code == 400
+        app_module.db_conn.close()
+
+    def test_reports_when_sqlite_is_disabled(self, client):
+        """Without SQLite there is no history to serve."""
+        assert app_module.db_conn is None
+        resp = client.get("/api/history")
+        assert resp.status_code == 503
