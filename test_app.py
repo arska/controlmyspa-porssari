@@ -13,6 +13,7 @@ import pytest
 import requests
 
 import app as app_module
+import storage
 
 
 @pytest.fixture(autouse=True)
@@ -28,7 +29,7 @@ def _reset_state():
     )
     app_module.STALE_ALERT_ACTIVE = False
     app_module.latest_outside_temp = None
-    app_module.db_conn = None
+    app_module.store = storage.Store()
     app_module.hourly_prices = {}
     app_module.heating_schedule = set()
     app_module.cooling_k = app_module.DEFAULT_COOLING_K
@@ -1387,20 +1388,17 @@ class TestSQLitePersistence:
         monkeypatch.setenv("SQLITE_PATH", db_path)
         with app_module.APP.app_context():
             app_module.init_db()
-        assert app_module.db_conn is not None
-        cursor = app_module.db_conn.execute(
-            "SELECT name FROM sqlite_master "
-            "WHERE type='table' AND name='temperature_readings'"
-        )
-        assert cursor.fetchone() is not None
-        app_module.db_conn.close()
+        assert app_module.store.enabled
+        app_module.store.save_reading("2026-08-20T00:00:00+00:00", 35.0, 37.0, 5.0)
+        assert len(app_module.store.newest_readings(10)) == 1
+        app_module.store.close()
 
     def test_sqlite_disabled_when_dir_missing(self, monkeypatch):
-        """init_db() sets db_conn to None when SQLITE_PATH dir doesn't exist."""
+        """init_db() leaves the store disabled when SQLITE_PATH dir doesn't exist."""
         monkeypatch.setenv("SQLITE_PATH", "/nonexistent/path/test.db")
         with app_module.APP.app_context():
             app_module.init_db()
-        assert app_module.db_conn is None
+        assert app_module.store.enabled is False
 
     def test_startup_backfill_from_sqlite(self, tmp_path, monkeypatch):
         """init_db() backfills the deque from existing SQLite data."""
@@ -1442,7 +1440,7 @@ class TestSQLitePersistence:
         assert app_module.temperature_history[0]["current_temp"] == 30.0
         assert app_module.temperature_history[-1]["current_temp"] == 35.0
         assert app_module.temperature_history[-1]["outside_temp"] == 5.0
-        app_module.db_conn.close()
+        app_module.store.close()
 
     def test_startup_backfill_is_capped_at_deque_capacity(self, tmp_path, monkeypatch):
         """Backfill loads the newest readings and stops at the buffer size."""
@@ -1481,7 +1479,7 @@ class TestSQLitePersistence:
             app_module.temperature_history[-1]["time"]
         )
         assert (now - newest) < datetime.timedelta(minutes=10)
-        app_module.db_conn.close()
+        app_module.store.close()
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
@@ -1501,12 +1499,12 @@ class TestSQLitePersistence:
         with app_module.APP.app_context():
             app_module.set_temp(37)
 
-        rows = app_module.db_conn.execute(
-            "SELECT current_temp, desired_temp, outside_temp FROM temperature_readings"
-        ).fetchall()
+        rows = app_module.store.newest_readings(10)
         assert len(rows) == 1
-        assert rows[0] == (34.5, 37.0, 8.0)
-        app_module.db_conn.close()
+        assert rows[0]["current_temp"] == 34.5
+        assert rows[0]["desired_temp"] == 37.0
+        assert rows[0]["outside_temp"] == 8.0
+        app_module.store.close()
 
     def test_init_db_creates_price_table(self, tmp_path, monkeypatch):
         """init_db() creates the price_history table."""
@@ -1514,11 +1512,11 @@ class TestSQLitePersistence:
         monkeypatch.setenv("SQLITE_PATH", db_path)
         with app_module.APP.app_context():
             app_module.init_db()
-        cursor = app_module.db_conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='price_history'"
+        app_module.store.save_prices({"2026-08-20T04:00:00+03:00": 0.1})
+        assert app_module.store.prices_since(
+            datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
         )
-        assert cursor.fetchone() is not None
-        app_module.db_conn.close()
+        app_module.store.close()
 
     def test_startup_backfills_prices_from_sqlite(self, tmp_path, monkeypatch):
         """init_db() backfills recent prices from the price_history table."""
@@ -1547,7 +1545,7 @@ class TestSQLitePersistence:
 
         # Only prices within the in-memory window are backfilled
         assert app_module.hourly_prices == {recent: pytest.approx(0.07)}
-        app_module.db_conn.close()
+        app_module.store.close()
 
     def test_startup_ignores_unparsable_price_times(self, tmp_path, monkeypatch):
         """init_db() skips price rows with a broken timestamp."""
@@ -1568,18 +1566,18 @@ class TestSQLitePersistence:
             app_module.init_db()
 
         assert app_module.hourly_prices == {}
-        app_module.db_conn.close()
+        app_module.store.close()
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_set_temp_works_without_sqlite(self, mock_api_class):
-        """set_temp() works normally when SQLite is disabled (db_conn is None)."""
+        """set_temp() works normally when the store is disabled."""
         mock_api = MagicMock()
         mock_api.current_temp = 34.5
         mock_api.desired_temp = 37
         mock_api_class.return_value = mock_api
 
-        assert app_module.db_conn is None
+        assert app_module.store.enabled is False
         with app_module.APP.app_context():
             app_module.set_temp(37)
 
@@ -1723,7 +1721,7 @@ class TestUpdatePrices:
 
         with app_module.APP.app_context():
             app_module.update_prices()
-        app_module.db_conn.close()
+        app_module.store.close()
 
         # Simulate a restart: memory is empty, SQLite still has the prices
         app_module.hourly_prices = {}
@@ -1731,7 +1729,7 @@ class TestUpdatePrices:
             app_module.init_db()
 
         assert app_module.hourly_prices[past_hour.isoformat()] == pytest.approx(0.02)
-        app_module.db_conn.close()
+        app_module.store.close()
 
     @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
     def test_keeps_old_prices_on_failure(self, mock_get):
@@ -1765,12 +1763,11 @@ class TestUpdatePrices:
         with app_module.APP.app_context():
             app_module.update_prices()
 
-        rows = app_module.db_conn.execute(
-            "SELECT time, price FROM price_history"
-        ).fetchall()
-        assert len(rows) == 1
-        assert rows[0] == ("2026-07-18T10:00:00+03:00", pytest.approx(0.02))
-        app_module.db_conn.close()
+        stored = app_module.store.prices_since(
+            datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC)
+        )
+        assert stored == {"2026-07-18T10:00:00+03:00": pytest.approx(0.02)}
+        app_module.store.close()
 
     @patch.dict(
         "os.environ", {"PRICE_MARGIN_NIGHT": "4.02", "PRICE_MARGIN_DAY": "4.91"}
@@ -2769,16 +2766,10 @@ class TestHistoryAPI:
         """The endpoint serves rows straight from SQLite, not the memory window."""
         self._db(tmp_path, monkeypatch)
         old = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
-        app_module.db_conn.execute(
-            "INSERT INTO temperature_readings "
-            "(time, current_temp, desired_temp, outside_temp) VALUES (?, ?, ?, ?)",
-            (old.isoformat(), 35.0, 37.0, 5.0),
+        app_module.store.save_reading(old.isoformat(), 35.0, 37.0, 5.0)
+        app_module.store.save_prices(
+            {old.astimezone(ZoneInfo("Europe/Helsinki")).isoformat(): 0.07}
         )
-        app_module.db_conn.execute(
-            "INSERT INTO price_history (time, price) VALUES (?, ?)",
-            (old.astimezone(ZoneInfo("Europe/Helsinki")).isoformat(), 0.07),
-        )
-        app_module.db_conn.commit()
 
         resp = client.get(
             "/api/history",
@@ -2793,32 +2784,27 @@ class TestHistoryAPI:
         assert data["readings"][0]["current_temp"] == 35.0
         assert len(data["prices"]) == 1
         assert data["prices"][0]["price"] == pytest.approx(0.07)
-        app_module.db_conn.close()
+        app_module.store.close()
 
     def test_excludes_rows_outside_the_range(self, client, tmp_path, monkeypatch):
         """Rows outside from/to are not returned."""
         self._db(tmp_path, monkeypatch)
         old = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
-        app_module.db_conn.execute(
-            "INSERT INTO temperature_readings "
-            "(time, current_temp, desired_temp, outside_temp) VALUES (?, ?, ?, ?)",
-            (old.isoformat(), 35.0, 37.0, 5.0),
-        )
-        app_module.db_conn.commit()
+        app_module.store.save_reading(old.isoformat(), 35.0, 37.0, 5.0)
 
         resp = client.get("/api/history")  # defaults to the last 7 days
         assert resp.get_json()["readings"] == []
-        app_module.db_conn.close()
+        app_module.store.close()
 
     def test_rejects_an_unparsable_timestamp(self, client, tmp_path, monkeypatch):
         """A bad from/to is a client error, not a 500."""
         self._db(tmp_path, monkeypatch)
         resp = client.get("/api/history", query_string={"from": "yesterday"})
         assert resp.status_code == 400
-        app_module.db_conn.close()
+        app_module.store.close()
 
     def test_reports_when_sqlite_is_disabled(self, client):
         """Without SQLite there is no history to serve."""
-        assert app_module.db_conn is None
+        assert app_module.store.enabled is False
         resp = client.get("/api/history")
         assert resp.status_code == 503
