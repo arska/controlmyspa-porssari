@@ -4,7 +4,7 @@ Nordpool electricity-price-based temperature control for [Balboa ControlMySpa](h
 
 ## Features
 
-- **Physics-based heating** — estimates cooling rate from temperature history (Newton's law), predicts when the pool will drop below `TEMP_MIN`, and schedules heating during the cheapest hours before that deadline
+- **Physics-based heating** — estimates cooling *and* heating rates from temperature history (Newton's law), predicts when the pool will drop below `TEMP_MIN`, and schedules heating during the cheapest hours before that deadline. Blocks are sized from the temperature the pool will have when heating starts, and booking waits while cheaper hours may still publish (spot-hinta releases tomorrow at ~14:00)
 - **Direct Nordpool pricing** — fetches spot prices from [spot-hinta.fi](https://spot-hinta.fi) (free, no API key), selects cheapest hours within the predicted deadline
 - **Web GUI** — temperature graph with predicted future temps, price overlay, TEMP_MIN threshold, schedule grid, manual override controls
 - **Telegram bot** — remote status checks with predicted deadline, override toggle, heat/cold commands, price schedule
@@ -42,7 +42,8 @@ Configure using environment variables. For local development, put them in a `.en
 | `TEMP_OVERRIDE` | `0` | If non-zero, overrides all price logic with this temperature |
 | `TEMP_MIN` | `34` | Minimum pool temperature — system heats to prevent dropping below this |
 | `HEATING_HOURS` | `6` | Max heating hours per 14:00-14:00 budget window (safety cap) |
-| `HEATING_RATE` | `1.6` | Heating rate in °C/h (measured from production data). Overestimating it books too few hours, so the pool tops off in a later, pricier hour |
+| `HEATING_RATE` | measured | Heating rate in °C/h. Measured from history by default (clamped to 0.8-3.0, falling back to 1.6); set this to pin it |
+| `TEMP_DEADBAND` | `1.0` | Don't book heating while the pool is within this many °C of `TEMP_HIGH`. The spa reports in 0.5°C steps, so without it every step down books an hour |
 | `PRICE_INTERVAL` | `60` | Price aggregation interval in minutes (`15` or `60`) |
 | `WEATHER_LAT` | `60.45` | Latitude for weather lookup (default: Turku) |
 | `WEATHER_LON` | `22.27` | Longitude for weather lookup (default: Turku) |

@@ -50,6 +50,11 @@ hourly_prices: dict[str, float] = {}
 # them forever so past selections can be evaluated retroactively.
 PRICE_MEMORY_HOURS = 168
 heating_schedule: set[str] = set()
+DEFAULT_HEATING_RATE = 1.6  # °C/h, measured from production history
+MIN_HEATING_RATE = 0.8  # a slower estimate than this is sensor noise
+MAX_HEATING_RATE = 3.0  # the heater cannot do better than this
+MIN_HEATING_SAMPLES = 3
+heating_rate: float = DEFAULT_HEATING_RATE  # pylint: disable=invalid-name
 DEFAULT_COOLING_K = 0.006
 MIN_COOLING_K = 0.002  # Pool can't cool slower than this (physical limit)
 MAX_COOLING_K = 0.020  # Pool can't cool faster than this (lid off in winter)
@@ -76,14 +81,15 @@ STALE_ALERT_ACTIVE = False
 
 
 def _heating_rate() -> float:
-    """Return heating rate in °C/h from env or default.
+    """Return heating rate in °C/h: the HEATING_RATE override, else measured.
 
-    The default is measured from production history: continuous heating
-    stretches gain ~1.5-1.8°C/h. Overestimating it books too few hours, so the
-    pool falls short and tops off in whatever hour is cheapest next — usually
-    a more expensive one than the hours that were skipped.
+    Overestimating the rate books too few hours, so the pool falls short and
+    tops off in whatever hour is cheapest next — usually a dearer one than the
+    hours that were skipped. estimate_heating_rate() keeps the value honest as
+    the cover ages and the seasons change.
     """
-    return float(os.getenv("HEATING_RATE", "1.6"))
+    override = os.getenv("HEATING_RATE")
+    return float(override) if override else heating_rate
 
 
 def send_telegram(message: str, *, chat_id: str | None = None) -> None:
@@ -564,6 +570,60 @@ def estimate_cooling_rate() -> float:
     return cooling_k
 
 
+def _measure_heating_stretch(
+    stretch: list[dict], temp_high: float, rates: list[float]
+) -> None:
+    """Measure °C/h across one continuous heating stretch.
+
+    Stretches that reach the setpoint are skipped: the spa stops heating there,
+    so the measured gain understates the rate.
+    """
+    if len(stretch) < 2:  # noqa: PLR2004
+        return
+    start, end = stretch[0], stretch[-1]
+    if end["current_temp"] >= temp_high - 0.25:
+        return
+    hours = (
+        datetime.datetime.fromisoformat(end["time"])
+        - datetime.datetime.fromisoformat(start["time"])
+    ).total_seconds() / 3600
+    gain = end["current_temp"] - start["current_temp"]
+    if hours >= 0.5 and gain > 0:  # noqa: PLR2004
+        rates.append(gain / hours)
+
+
+def estimate_heating_rate() -> float:
+    """Estimate how fast the spa heats, from stretches where it was heating.
+
+    Same shape as estimate_cooling_rate(): median of the measurements, clamped
+    to a physically plausible band, falling back to the default until enough
+    stretches have been seen.
+    """
+    global heating_rate  # noqa: PLW0603
+    temp_high = int(os.getenv("TEMP_HIGH", "0"))
+    rates: list[float] = []
+    stretch: list[dict] = []
+    for entry in temperature_history:
+        if entry["desired_temp"] >= temp_high:
+            stretch.append(entry)
+        else:
+            _measure_heating_stretch(stretch, temp_high, rates)
+            stretch = []
+    _measure_heating_stretch(stretch, temp_high, rates)
+
+    if len(rates) >= MIN_HEATING_SAMPLES:
+        median_rate = statistics.median(rates)
+        heating_rate = max(MIN_HEATING_RATE, min(MAX_HEATING_RATE, median_rate))
+        if heating_rate != median_rate:
+            APP.logger.warning(
+                "heating rate %.2f°C/h clamped to %.2f", median_rate, heating_rate
+            )
+    else:
+        heating_rate = DEFAULT_HEATING_RATE
+    APP.logger.info("heating rate %.2f°C/h (%d stretches)", heating_rate, len(rates))
+    return heating_rate
+
+
 def predict_time_to_temp(target_temp: float, current_temp: float) -> float:
     """Predict hours until pool drops from current_temp to target_temp.
 
@@ -624,6 +684,98 @@ def _candidate_hours(
     return within if len(within) >= hours_needed else future_prices
 
 
+def _predict_temp_at(current_temp: float, target_dt: datetime.datetime) -> float:
+    """Predict the pool temperature at target_dt with no heating in between.
+
+    Uses the same hourly Newton stepping as predict_time_to_temp(), so a block
+    booked hours from now is sized against the temperature the pool will
+    actually have when heating starts — not the warmer one it has now.
+    """
+    tz = ZoneInfo("Europe/Helsinki")
+    now = datetime.datetime.now(tz)
+    hours = (target_dt - now).total_seconds() / 3600
+    temp = current_temp
+    for step in range(max(0, int(hours))):
+        outside = _outside_temp_at(now + datetime.timedelta(hours=step))
+        if temp > outside:
+            temp -= cooling_k * (temp - outside)
+    return temp
+
+
+def _hours_needed_at(
+    current_temp: float, start_dt: datetime.datetime, temp_high: float
+) -> int:
+    """Hours of heating needed to reach TEMP_HIGH from a block starting at start_dt.
+
+    Nothing is booked while the pool is within TEMP_DEADBAND of the target: the
+    spa's sensor resolves 0.5°C, so without a deadband every sensor tick books
+    a fresh hour of heating at whatever price happens to be cheapest next.
+    """
+    deadband = float(os.getenv("TEMP_DEADBAND", "1.0"))
+    temp_then = _predict_temp_at(current_temp, start_dt)
+    if temp_then > temp_high - deadband:
+        return 0
+    return math.ceil((temp_high - temp_then) / _heating_rate())
+
+
+def _can_wait_for_prices(
+    deadline_hours: float, future_prices: dict[str, float], now_local: datetime.datetime
+) -> bool:
+    """Whether the pool survives past the last known price hour.
+
+    spot-hinta.fi publishes tomorrow at ~14:00, so before then the cheapest
+    *known* hour is often an expensive one later today. If TEMP_MIN is not at
+    risk before the horizon runs out, booking can wait until the cheaper hours
+    are actually visible.
+    """
+    if deadline_hours <= 0:
+        return False
+    horizon = max(datetime.datetime.fromisoformat(k) for k in future_prices)
+    hours_to_horizon = (horizon - now_local).total_seconds() / 3600 + 1
+    return deadline_hours > hours_to_horizon
+
+
+def _cheapest_first(candidates: dict[str, float]) -> list[str]:
+    """Order hours by price, resolving ties to the earliest hour.
+
+    Equal prices are common on Nordpool; without the time tiebreak the order
+    would be dict insertion order, which is arbitrary for prices restored from
+    SQLite.
+    """
+    return sorted(
+        candidates, key=lambda k: (candidates[k], datetime.datetime.fromisoformat(k))
+    )
+
+
+def _size_and_pick(
+    future_prices: dict[str, float],
+    now_local: datetime.datetime,
+    deadline_hours: float,
+    current_temp: float,
+    temp_high: float,
+) -> tuple[list[str], int]:
+    """Pick the cheapest hours, sizing the block from its own start time.
+
+    Sizing and picking depend on each other — a bigger block may start earlier,
+    and an earlier start needs fewer hours — so this iterates to a fixed point
+    (at most a few rounds; the block only ever grows).
+    """
+    hours_needed = _hours_needed_at(current_temp, now_local, temp_high)
+    ordered: list[str] = []
+    for _ in range(3):
+        candidates = _candidate_hours(
+            future_prices, now_local, deadline_hours, max(hours_needed, 1)
+        )
+        ordered = _cheapest_first(candidates)
+        block = ordered[: max(hours_needed, 1)]
+        start = min(datetime.datetime.fromisoformat(k) for k in block)
+        resized = _hours_needed_at(current_temp, start, temp_high)
+        if resized == hours_needed:
+            break
+        hours_needed = resized
+    return ordered, hours_needed
+
+
 def calculate_schedule() -> None:
     """Schedule heating based on cooling model and electricity prices.
 
@@ -638,23 +790,24 @@ def calculate_schedule() -> None:
     temp_min = float(os.getenv("TEMP_MIN", "34"))
     max_hours = int(os.getenv("HEATING_HOURS", "6"))
 
+    if not temperature_history:
+        # On startup there is no reading yet. Assuming TEMP_MIN would look like
+        # an emergency and book heating in whatever hour is cheapest right now;
+        # the first control() cycle supplies a real reading moments later.
+        APP.logger.info("no temperature reading yet, not scheduling")
+        return
+
     estimate_cooling_rate()
+    estimate_heating_rate()
 
-    current_temp = (
-        temperature_history[-1]["current_temp"] if temperature_history else temp_min
-    )
+    current_temp = temperature_history[-1]["current_temp"]
     deadline_hours = predict_time_to_temp(temp_min, current_temp)
-    # Calculate hours needed based on current temp, not worst-case from TEMP_MIN
-    degrees_to_heat = max(0, temp_high - current_temp)
-    hours_needed = (
-        math.ceil(degrees_to_heat / _heating_rate()) if degrees_to_heat > 0 else 0
-    )
 
+    current_hour = now_local.replace(minute=0, second=0, microsecond=0)
     future_prices = {
         k: v
         for k, v in hourly_prices.items()
-        if datetime.datetime.fromisoformat(k)
-        >= now_local.replace(minute=0, second=0, microsecond=0)
+        if datetime.datetime.fromisoformat(k) >= current_hour
     }
 
     if not future_prices:
@@ -662,22 +815,24 @@ def calculate_schedule() -> None:
         APP.logger.warning("no future prices available, clearing schedule")
         return
 
-    candidates = _candidate_hours(
-        future_prices, now_local, deadline_hours, hours_needed
-    )
-    # Cheapest first; equal prices resolve to the earliest hour rather than to
-    # dict insertion order, which is arbitrary for prices restored from SQLite.
-    sorted_hours = sorted(
-        candidates, key=lambda k: (candidates[k], datetime.datetime.fromisoformat(k))
-    )
+    if _can_wait_for_prices(deadline_hours, future_prices, now_local):
+        # Keep what is already booked — deferring must not cancel an hour that
+        # is about to start — but book nothing new until better prices arrive.
+        heating_schedule = {k for k in heating_schedule if k in future_prices}
+        APP.logger.info(
+            "waiting for more prices (deadline %.1fh out), keeping %d booked hours",
+            deadline_hours,
+            len(heating_schedule),
+        )
+        return
 
+    sorted_hours, hours_needed = _size_and_pick(
+        future_prices, now_local, deadline_hours, current_temp, temp_high
+    )
     heated_in_window = _heated_hours_in_window(tz, temp_high)
     remaining_budget = max(0, max_hours - len(heated_in_window))
 
     pick_count = min(hours_needed, remaining_budget)
-    if pick_count == 0 and remaining_budget > 0 and current_temp < temp_high:
-        pick_count = 1
-
     heating_schedule = set(sorted_hours[:pick_count])
 
     if hours_needed > remaining_budget:
@@ -991,7 +1146,7 @@ def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
     now_local = datetime.datetime.now(tz)
     now_hour = now_local.replace(minute=0, second=0, microsecond=0)
     temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    heating_rate = _heating_rate()
+    rate = _heating_rate()
 
     current = temperature_history[-1]["current_temp"] if temperature_history else 34.0
     predictions = []
@@ -1017,7 +1172,7 @@ def _predict_future_temps() -> list[dict]:  # pylint: disable=too-many-locals
                 temp -= drop
             # Heat if scheduled
             if step_key in heating_schedule:
-                temp += heating_rate
+                temp += rate
                 temp = min(temp, float(temp_high))
 
         predictions.append(
@@ -1091,6 +1246,75 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
             "cooling_k": cooling_k,
             "predicted_deadline": predicted_deadline,
             "predicted_temps": _predict_future_temps(),
+        }
+    )
+
+
+MAX_HISTORY_ROWS = 50000
+
+
+@APP.route("/api/history")
+def api_history() -> flask.Response:
+    """Return stored readings and prices for a time range, straight from SQLite.
+
+    /api/temperatures only serves the in-memory window (a few days). This
+    endpoint reaches the full tables, so past scheduling decisions can be
+    replayed against the prices that were actually paid.
+    """
+    if db_conn is None:
+        return flask.jsonify({"error": "sqlite disabled"}), 503
+
+    now = datetime.datetime.now(tz=datetime.UTC)
+    try:
+        start = datetime.datetime.fromisoformat(
+            flask.request.args.get("from")
+            or (now - datetime.timedelta(days=7)).isoformat()
+        )
+        end = datetime.datetime.fromisoformat(
+            flask.request.args.get("to") or now.isoformat()
+        )
+        limit = min(
+            int(flask.request.args.get("limit", MAX_HISTORY_ROWS)), MAX_HISTORY_ROWS
+        )
+    except ValueError:
+        return flask.jsonify({"error": "from/to must be ISO timestamps"}), 400
+
+    with db_lock:
+        # Readings are stored as UTC ISO strings, so they compare lexically.
+        rows = db_conn.execute(
+            "SELECT time, current_temp, desired_temp, outside_temp "
+            "FROM temperature_readings WHERE time >= ? AND time <= ? "
+            "ORDER BY time LIMIT ?",
+            (start.isoformat(), end.isoformat(), limit),
+        ).fetchall()
+        # Price keys carry a local offset, so filter them on parsed values.
+        price_rows = db_conn.execute("SELECT time, price FROM price_history").fetchall()
+
+    prices = []
+    for time_key, price in sorted(price_rows):
+        try:
+            price_time = datetime.datetime.fromisoformat(time_key)
+        except ValueError:
+            continue
+        if price_time.tzinfo is None:
+            price_time = price_time.replace(tzinfo=datetime.UTC)
+        if start <= price_time <= end:
+            prices.append({"time": time_key, "price": price})
+
+    return flask.jsonify(
+        {
+            "from": start.isoformat(),
+            "to": end.isoformat(),
+            "readings": [
+                {
+                    "time": t,
+                    "current_temp": current,
+                    "desired_temp": desired,
+                    "outside_temp": outside,
+                }
+                for t, current, desired, outside in rows
+            ],
+            "prices": prices,
         }
     )
 
