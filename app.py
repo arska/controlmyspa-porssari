@@ -59,8 +59,10 @@ DEFAULT_COOLING_K = 0.006
 MIN_COOLING_K = 0.002  # Pool can't cool slower than this (physical limit)
 MAX_COOLING_K = 0.020  # Pool can't cool faster than this (lid off in winter)
 cooling_k: float = DEFAULT_COOLING_K  # pylint: disable=invalid-name
-# Generous in-memory buffer; SQLite is the source of truth for persistence
-temperature_history: collections.deque[dict] = collections.deque(maxlen=999)
+# Holds a week at the current 8 readings/hour, matching PRICE_MEMORY_HOURS so
+# the chart's temperatures and price bars span the same time. SQLite is the
+# source of truth; this is refilled from it on startup.
+temperature_history: collections.deque[dict] = collections.deque(maxlen=1400)
 
 # Latest outside air temperature in °C (or None), refreshed hourly by
 # update_weather(). Recorded alongside spa temps to later model
@@ -241,16 +243,16 @@ def init_db() -> None:
     )
     db_conn.commit()
 
-    # Backfill the in-memory deque from the last 48h
-    cutoff = (
-        datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(hours=48)
-    ).isoformat()
+    # Fill the deque to capacity with the newest readings. A shorter window
+    # starves the estimators: 48h of production data holds 2 cooling periods
+    # and 1 heating stretch, short of the 5 and 3 they need, so every restart
+    # would fall back to the default constants for days.
     rows = db_conn.execute(
         "SELECT time, current_temp, desired_temp, outside_temp "
-        "FROM temperature_readings WHERE time >= ? ORDER BY time",
-        (cutoff,),
+        "FROM temperature_readings ORDER BY time DESC LIMIT ?",
+        (temperature_history.maxlen,),
     ).fetchall()
-    for time_str, current_temp, desired_temp, outside_temp in rows:
+    for time_str, current_temp, desired_temp, outside_temp in reversed(rows):
         temperature_history.append(
             {
                 "time": time_str,

@@ -141,8 +141,9 @@ class TestTemperatureAPI:
         assert data["outside_temp"] == 7.5
 
     def test_history_maxlen(self, client):
-        """Temperature history respects 999-point max."""
-        for i in range(1100):
+        """Temperature history is a bounded ring buffer, a week deep."""
+        capacity = app_module.temperature_history.maxlen
+        for i in range(capacity + 100):
             app_module.temperature_history.append(
                 {
                     "time": f"2024-01-01T{i:05d}",
@@ -150,7 +151,7 @@ class TestTemperatureAPI:
                     "desired_temp": 37,
                 }
             )
-        assert len(app_module.temperature_history) == 999
+        assert len(app_module.temperature_history) == capacity
 
 
 # --- Override API tests ---
@@ -1368,7 +1369,7 @@ class TestSQLitePersistence:
         )
         now = datetime.datetime.now(tz=datetime.UTC)
         recent = (now - datetime.timedelta(hours=1)).isoformat()
-        old = (now - datetime.timedelta(hours=72)).isoformat()
+        old = (now - datetime.timedelta(hours=100)).isoformat()
         conn.execute(
             "INSERT INTO temperature_readings "
             "(time, current_temp, desired_temp, outside_temp) "
@@ -1388,10 +1389,50 @@ class TestSQLitePersistence:
         with app_module.APP.app_context():
             app_module.init_db()
 
-        # Only the recent row (within 48h) should be backfilled
-        assert len(app_module.temperature_history) == 1
-        assert app_module.temperature_history[0]["current_temp"] == 35.0
-        assert app_module.temperature_history[0]["outside_temp"] == 5.0
+        # Both rows load: the estimators need days of history, not hours
+        assert len(app_module.temperature_history) == 2
+        assert app_module.temperature_history[0]["current_temp"] == 30.0
+        assert app_module.temperature_history[-1]["current_temp"] == 35.0
+        assert app_module.temperature_history[-1]["outside_temp"] == 5.0
+        app_module.db_conn.close()
+
+    def test_startup_backfill_is_capped_at_deque_capacity(self, tmp_path, monkeypatch):
+        """Backfill loads the newest readings and stops at the buffer size."""
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE temperature_readings "
+            "(id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "time TEXT NOT NULL, current_temp REAL NOT NULL, "
+            "desired_temp REAL NOT NULL, outside_temp REAL)"
+        )
+        now = datetime.datetime.now(tz=datetime.UTC)
+        capacity = app_module.temperature_history.maxlen
+        for i in range(capacity + 50):
+            conn.execute(
+                "INSERT INTO temperature_readings "
+                "(time, current_temp, desired_temp, outside_temp) VALUES (?, ?, ?, ?)",
+                (
+                    (
+                        now - datetime.timedelta(minutes=8 * (capacity + 50 - i))
+                    ).isoformat(),
+                    30.0 + i % 5,
+                    10.0,
+                    5.0,
+                ),
+            )
+        conn.commit()
+        conn.close()
+
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        assert len(app_module.temperature_history) == capacity
+        newest = datetime.datetime.fromisoformat(
+            app_module.temperature_history[-1]["time"]
+        )
+        assert (now - newest) < datetime.timedelta(minutes=10)
         app_module.db_conn.close()
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})

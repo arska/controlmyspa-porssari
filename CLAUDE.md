@@ -18,7 +18,7 @@ Temperature and price history are persisted to SQLite (optional, enabled when `S
 - `heating_schedule` — set of ISO datetime keys for hours to heat (determined by cooling model)
 - `cooling_k` — estimated cooling constant (Newton's law), updated from temperature history
 - `heating_rate` — estimated °C/h, measured from uncapped heating stretches (clamped to 0.8-3.0, default 1.6 until 3 stretches are seen); `HEATING_RATE` overrides it
-- `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=999)`); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; deque is backfilled from the last 48h on startup.
+- `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=1400)`, about a week at 8 readings/hour); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; on startup the deque is refilled to capacity with the newest rows. It has to be that deep: the estimators need ~5 cooling periods and 3 heating stretches, which 48h of data does not contain, so a shorter backfill leaves every restart on the default constants for days.
 - `manual_override_endtime` — datetime for manual override expiry
 - `latest_outside_temp` — most recent outside air temperature (°C), refreshed hourly
 - `cache` — Flask-Caching SimpleCache for pool temps (15min TTL)
