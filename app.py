@@ -13,7 +13,6 @@ import math
 import os
 import pathlib
 import sqlite3
-import statistics
 import threading
 from zoneinfo import ZoneInfo
 
@@ -29,6 +28,9 @@ from flask_caching import Cache
 from sentry_sdk.integrations.flask import FlaskIntegration
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import pricing
+import thermal
+
 APP = flask.Flask(__name__)
 cache = Cache(APP, config={"CACHE_TYPE": "SimpleCache"})
 scheduler = BackgroundScheduler()
@@ -40,9 +42,7 @@ DEFAULT_WEATHER_LON = "22.27"
 # the JSON (KeyError for a missing field, ValueError for bad/no JSON). Kept as a
 # named tuple because ruff 0.15.21's formatter mangles inline `except (...)`.
 WEATHER_FETCH_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
-SPOT_HINTA_API = "https://api.spot-hinta.fi"
-# Named tuples for except clauses — ruff 0.15.21 strips inline parentheses.
-PRICE_FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
+# Named tuple for the except clause — ruff 0.15.21 strips inline parentheses.
 PRICE_UPDATE_ERRORS = (requests.exceptions.RequestException, KeyError, ValueError)
 hourly_prices: dict[str, float] = {}
 # How far back prices are kept in memory (for the chart): a week, so the price
@@ -340,94 +340,12 @@ def update_weather() -> None:
             APP.logger.exception("failed to fetch outside temperature")
 
 
-def _fetch_price_entries() -> list[dict]:
-    """Fetch raw 15-min price entries from spot-hinta.fi /Today and /DayForward."""
-    all_entries: list[dict] = []
-    for endpoint in ("/Today", "/DayForward"):
-        try:
-            resp = requests.get(f"{SPOT_HINTA_API}{endpoint}", timeout=10)
-            if resp.status_code == 404 and endpoint == "/DayForward":  # noqa: PLR2004
-                # Day-ahead prices aren't published yet (normal before ~13:00 CET)
-                APP.logger.info("day-ahead prices not yet available")
-                continue
-            resp.raise_for_status()
-            all_entries.extend(resp.json())
-        except PRICE_FETCH_ERRORS:
-            APP.logger.exception("failed to fetch %s", endpoint)
-    return all_entries
-
-
-def _price_margin(hour: int) -> float:
-    """Return the price margin (EUR/kWh) for the given hour of day.
-
-    Covers transmission costs, retailer margin, etc. Configurable via
-    PRICE_MARGIN_NIGHT (22:00-07:00) and PRICE_MARGIN_DAY (07:00-22:00).
-    Default: 0 (no margin).
-    """
-    night = float(os.getenv("PRICE_MARGIN_NIGHT", "0")) / 100  # c/kWh → EUR/kWh
-    day = float(os.getenv("PRICE_MARGIN_DAY", "0")) / 100
-    night_start = 22
-    night_end = 7
-    if hour >= night_start or hour < night_end:
-        return night
-    return day
-
-
-def _aggregate_prices(all_entries: list[dict], interval: int) -> dict[str, float]:
-    """Group raw entries by interval boundary, average, and add margin."""
-    slots_per_interval = interval // 15
-    groups: dict[str, list[float]] = collections.defaultdict(list)
-    for entry in all_entries:
-        dt = datetime.datetime.fromisoformat(entry["DateTime"])
-        minute = (dt.minute // interval) * interval
-        interval_start = dt.replace(minute=minute, second=0, microsecond=0)
-        groups[interval_start.isoformat()].append(entry["PriceWithTax"])
-    result = {}
-    for time_key, prices in groups.items():
-        if len(prices) == slots_per_interval:
-            hour = datetime.datetime.fromisoformat(time_key).hour
-            result[time_key] = sum(prices) / len(prices) + _price_margin(hour)
-    return result
-
-
-def _within_price_memory(time_key: str) -> bool:
-    """Return whether a price interval is recent enough to keep in memory."""
-    try:
-        price_time = datetime.datetime.fromisoformat(time_key)
-    except ValueError:
-        APP.logger.warning("ignoring price with unparsable timestamp %r", time_key)
-        return False
-    if price_time.tzinfo is None:
-        price_time = price_time.replace(tzinfo=datetime.UTC)
-    cutoff = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
-        hours=PRICE_MEMORY_HOURS
-    )
-    return price_time >= cutoff
-
-
 def _load_recent_prices() -> dict[str, float]:
     """Read prices of the last PRICE_MEMORY_HOURS from the price_history table."""
     if db_conn is None:
         return {}
     rows = db_conn.execute("SELECT time, price FROM price_history").fetchall()
-    return {k: v for k, v in rows if _within_price_memory(k)}
-
-
-def _merge_prices(
-    remembered: dict[str, float], fresh: dict[str, float]
-) -> dict[str, float]:
-    """Merge freshly fetched prices over remembered ones, dropping stale entries.
-
-    spot-hinta.fi only serves today and tomorrow, so past prices would vanish
-    from the chart on every fetch. Keep them for PRICE_MEMORY_HOURS; freshly
-    fetched values always win over remembered ones for the same interval.
-    """
-    kept = {
-        k: v
-        for k, v in remembered.items()
-        if k not in fresh and _within_price_memory(k)
-    }
-    return kept | fresh
+    return {k: v for k, v in rows if pricing.within_memory(k, PRICE_MEMORY_HOURS)}
 
 
 def _persist_prices(new_prices: dict[str, float]) -> None:
@@ -457,13 +375,15 @@ def update_prices() -> None:
     ):
         try:
             interval = int(os.getenv("PRICE_INTERVAL", "60"))
-            all_entries = _fetch_price_entries()
+            all_entries = pricing.fetch_entries()
             if not all_entries:
                 APP.logger.warning("no price data received from spot-hinta.fi")
                 return
-            new_prices = _aggregate_prices(all_entries, interval)
+            new_prices = pricing.aggregate(all_entries, interval)
             if new_prices:
-                hourly_prices = _merge_prices(hourly_prices, new_prices)
+                hourly_prices = pricing.merge(
+                    hourly_prices, new_prices, PRICE_MEMORY_HOURS
+                )
                 APP.logger.info(
                     "got %d price intervals from spot-hinta.fi (%d kept in memory)",
                     len(new_prices),
@@ -499,25 +419,10 @@ def _outside_temp_at(dt: datetime.datetime) -> float:
     return 15.0
 
 
-def _measure_cooling_period(
-    history: list[dict], start_idx: int, end_idx: int, k_values: list[float]
-) -> None:
-    """Measure cooling rate across a continuous non-heating period."""
-    if start_idx >= end_idx:
-        return
-    start = history[start_idx]
-    end = history[end_idx]
-    drop = start["current_temp"] - end["current_temp"]
-    dt_hours = (
-        datetime.datetime.fromisoformat(end["time"])
-        - datetime.datetime.fromisoformat(start["time"])
-    ).total_seconds() / 3600
-    avg_outside = (start["outside_temp"] + end["outside_temp"]) / 2
-    avg_pool = (start["current_temp"] + end["current_temp"]) / 2
-    temp_diff = avg_pool - avg_outside
-    # Require >0 drop, ≥2h duration, meaningful temp difference
-    if drop > 0 and dt_hours >= 2 and temp_diff > 1:  # noqa: PLR2004
-        k_values.append((drop / dt_hours) / temp_diff)
+def _outside_temp_in(hours: int) -> float:
+    """Outside temperature forecast `hours` from now, for the thermal model."""
+    now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
+    return _outside_temp_at(now + datetime.timedelta(hours=hours))
 
 
 def estimate_cooling_rate() -> float:
@@ -529,67 +434,21 @@ def estimate_cooling_rate() -> float:
     12 minutes looks like 2°C/h but is really just rounding. By measuring
     across multi-hour cooling stretches we get the true rate.
     """
-    global cooling_k  # noqa: PLW0603
-    temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    k_values = []
-    history = list(temperature_history)
-
-    # Find continuous cooling periods and measure overall drop
-    period_start_idx = None
-    for i, entry in enumerate(history):
-        is_cooling = (
-            entry["desired_temp"] < temp_high and entry.get("outside_temp") is not None
-        )
-        if not is_cooling:
-            if period_start_idx is not None:
-                _measure_cooling_period(history, period_start_idx, i - 1, k_values)
-            period_start_idx = None
-        elif period_start_idx is None:
-            period_start_idx = i
-
-    # Handle ongoing cooling period at end of history
-    if period_start_idx is not None:
-        _measure_cooling_period(history, period_start_idx, len(history) - 1, k_values)
-
-    min_data_points = 5
-    if len(k_values) >= min_data_points:
-        median_k = statistics.median(k_values)
-        clamped = max(MIN_COOLING_K, min(MAX_COOLING_K, median_k))
-        if clamped != median_k:
-            APP.logger.warning(
-                "cooling k=%.5f clamped to %.5f (bounds [%.3f, %.3f])",
-                median_k,
-                clamped,
-                MIN_COOLING_K,
-                MAX_COOLING_K,
-            )
-        cooling_k = clamped
-    else:
-        cooling_k = DEFAULT_COOLING_K
-    APP.logger.info("cooling rate k=%.5f (%d data points)", cooling_k, len(k_values))
+    global cooling_k
+    measured = thermal.cooling_periods(
+        list(temperature_history), int(os.getenv("TEMP_HIGH", "0"))
+    )
+    cooling_k, clamped = thermal.median_within(
+        measured,
+        thermal.MIN_COOLING_PERIODS,
+        MIN_COOLING_K,
+        MAX_COOLING_K,
+        DEFAULT_COOLING_K,
+    )
+    if clamped:
+        APP.logger.warning("cooling k clamped to %.5f", cooling_k)
+    APP.logger.info("cooling rate k=%.5f (%d periods)", cooling_k, len(measured))
     return cooling_k
-
-
-def _measure_heating_stretch(
-    stretch: list[dict], temp_high: float, rates: list[float]
-) -> None:
-    """Measure °C/h across one continuous heating stretch.
-
-    Stretches that reach the setpoint are skipped: the spa stops heating there,
-    so the measured gain understates the rate.
-    """
-    if len(stretch) < 2:  # noqa: PLR2004
-        return
-    start, end = stretch[0], stretch[-1]
-    if end["current_temp"] >= temp_high - 0.25:
-        return
-    hours = (
-        datetime.datetime.fromisoformat(end["time"])
-        - datetime.datetime.fromisoformat(start["time"])
-    ).total_seconds() / 3600
-    gain = end["current_temp"] - start["current_temp"]
-    if hours >= 0.5 and gain > 0:  # noqa: PLR2004
-        rates.append(gain / hours)
 
 
 def estimate_heating_rate() -> float:
@@ -599,28 +458,20 @@ def estimate_heating_rate() -> float:
     to a physically plausible band, falling back to the default until enough
     stretches have been seen.
     """
-    global heating_rate  # noqa: PLW0603
-    temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    rates: list[float] = []
-    stretch: list[dict] = []
-    for entry in temperature_history:
-        if entry["desired_temp"] >= temp_high:
-            stretch.append(entry)
-        else:
-            _measure_heating_stretch(stretch, temp_high, rates)
-            stretch = []
-    _measure_heating_stretch(stretch, temp_high, rates)
-
-    if len(rates) >= MIN_HEATING_SAMPLES:
-        median_rate = statistics.median(rates)
-        heating_rate = max(MIN_HEATING_RATE, min(MAX_HEATING_RATE, median_rate))
-        if heating_rate != median_rate:
-            APP.logger.warning(
-                "heating rate %.2f°C/h clamped to %.2f", median_rate, heating_rate
-            )
-    else:
-        heating_rate = DEFAULT_HEATING_RATE
-    APP.logger.info("heating rate %.2f°C/h (%d stretches)", heating_rate, len(rates))
+    global heating_rate
+    measured = thermal.heating_stretches(
+        list(temperature_history), int(os.getenv("TEMP_HIGH", "0"))
+    )
+    heating_rate, clamped = thermal.median_within(
+        measured,
+        MIN_HEATING_SAMPLES,
+        MIN_HEATING_RATE,
+        MAX_HEATING_RATE,
+        DEFAULT_HEATING_RATE,
+    )
+    if clamped:
+        APP.logger.warning("heating rate clamped to %.2f°C/h", heating_rate)
+    APP.logger.info("heating rate %.2f°C/h (%d stretches)", heating_rate, len(measured))
     return heating_rate
 
 
@@ -631,21 +482,7 @@ def predict_time_to_temp(target_temp: float, current_temp: float) -> float:
     temperature. Falls back to latest_outside_temp if no forecast.
     Returns 0.0 if pool is already at or below target.
     """
-    if current_temp <= target_temp:
-        return 0.0
-    tz = ZoneInfo("Europe/Helsinki")
-    now = datetime.datetime.now(tz)
-    temp = current_temp
-    for h in range(200):  # max ~8 days
-        step_dt = now + datetime.timedelta(hours=h)
-        outside = _outside_temp_at(step_dt)
-        if temp - outside <= 0:
-            return 0.0
-        drop = cooling_k * (temp - outside)
-        temp -= drop
-        if temp <= target_temp:
-            return float(h + 1)
-    return float(200)
+    return thermal.hours_until(target_temp, current_temp, cooling_k, _outside_temp_in)
 
 
 def _heated_hours_in_window(tz: ZoneInfo, temp_high: int) -> set[str]:
@@ -691,15 +528,9 @@ def _predict_temp_at(current_temp: float, target_dt: datetime.datetime) -> float
     booked hours from now is sized against the temperature the pool will
     actually have when heating starts — not the warmer one it has now.
     """
-    tz = ZoneInfo("Europe/Helsinki")
-    now = datetime.datetime.now(tz)
+    now = datetime.datetime.now(ZoneInfo("Europe/Helsinki"))
     hours = (target_dt - now).total_seconds() / 3600
-    temp = current_temp
-    for step in range(max(0, int(hours))):
-        outside = _outside_temp_at(now + datetime.timedelta(hours=step))
-        if temp > outside:
-            temp -= cooling_k * (temp - outside)
-    return temp
+    return thermal.temp_after(current_temp, hours, cooling_k, _outside_temp_in)
 
 
 def _hours_needed_at(
@@ -735,18 +566,6 @@ def _can_wait_for_prices(
     return deadline_hours > hours_to_horizon
 
 
-def _cheapest_first(candidates: dict[str, float]) -> list[str]:
-    """Order hours by price, resolving ties to the earliest hour.
-
-    Equal prices are common on Nordpool; without the time tiebreak the order
-    would be dict insertion order, which is arbitrary for prices restored from
-    SQLite.
-    """
-    return sorted(
-        candidates, key=lambda k: (candidates[k], datetime.datetime.fromisoformat(k))
-    )
-
-
 def _size_and_pick(
     future_prices: dict[str, float],
     now_local: datetime.datetime,
@@ -766,7 +585,7 @@ def _size_and_pick(
         candidates = _candidate_hours(
             future_prices, now_local, deadline_hours, max(hours_needed, 1)
         )
-        ordered = _cheapest_first(candidates)
+        ordered = pricing.cheapest_first(candidates)
         block = ordered[: max(hours_needed, 1)]
         start = min(datetime.datetime.fromisoformat(k) for k in block)
         resized = _hours_needed_at(current_temp, start, temp_high)
