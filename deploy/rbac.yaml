@@ -1,0 +1,36 @@
+# ClusterRole "admin", which github-deploy is bound to, does not cover
+# monitoring.coreos.com. Without this the deploy fails on the first
+# monitoring object, taking the app deploy down with it.
+#
+# The first apply has to be done by a human who already holds these verbs
+# (the vshn group has monitoring-edit here): a service account may not grant
+# itself permissions it does not hold. After that CI re-applies it normally.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: monitoring-editor
+  labels:
+    app: controlmyspa-porssari
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources:
+      - alertmanagerconfigs
+      - prometheusrules
+      - servicemonitors
+      - probes
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: monitoring-editor-github
+  labels:
+    app: controlmyspa-porssari
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: monitoring-editor
+subjects:
+  - kind: ServiceAccount
+    name: github-deploy
+    namespace: aarno-playground
