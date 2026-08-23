@@ -102,17 +102,39 @@ Both fire together when the API is down, since a gauge that stops being updated 
 
 Once `SpaApiUnreachable` and `SpaReadingFrozen` are live, `check_stale_temperature()` goes, and with it `STALE_ALERT_ACTIVE`, `last_stale_alert_time`, `STUCK_FRACTION`, `MIN_STALE_READINGS`, `STALE_HEATING_MINUTES` and `STALE_IDLE_MINUTES`. `thermal.mode_stretch()`, `thermal.expected_gain()` and `thermal.expected_drop()` have no other caller, so they go too, along with their tests.
 
-## Open question
+## What the cluster allows (checked 2026-08-23)
 
-Landingpager proves the pattern works on APPUiO without cluster-admin, so the original question (can we reach an Alertmanager we control?) is answered for that cluster and namespace. What is not yet proven is our own namespace: Landingpager deploys to `vshn-landingpager`, this app to `aarno-playground`. Before writing YAML, log in and check:
+Checked against the `exoscale-ch-gva-2-0` APPUiO cluster, namespace `aarno-playground`, where `deployment/controlmyspa-porssari` runs.
 
-```bash
-oc auth can-i create servicemonitors.monitoring.coreos.com -n aarno-playground
-oc auth can-i create prometheusrules.monitoring.coreos.com -n aarno-playground
-oc auth can-i create alertmanagerconfigs.monitoring.coreos.com -n aarno-playground
+All three CRDs exist, at the versions Landingpager's manifests use: `servicemonitors` and `prometheusrules` on `monitoring.coreos.com/v1`, `alertmanagerconfigs` on `v1beta1`. As a human namespace owner, `oc auth can-i create` answers yes to all three, so the original question (can we reach an Alertmanager we control?) is settled.
+
+**The CI service account cannot create them.** `github-deploy`, the account the deploy job logs in as, is bound only to ClusterRole `admin`, which does not cover `monitoring.coreos.com`:
+
+```
+oc auth can-i create servicemonitors.monitoring.coreos.com -n aarno-playground \
+  --as=system:serviceaccount:aarno-playground:github-deploy
+no
 ```
 
-It matters because `oc apply -f deploy/` is a single step: a rejected CRD fails the whole deploy, not just the monitoring part.
+Same answer for `prometheusrules` and `alertmanagerconfigs`. Since `oc apply -f deploy/` is a single step, dropping the manifests into `deploy/` without fixing this fails the whole deploy, app included.
+
+Landingpager solves it with one extra namespaced Role and RoleBinding, which is why its CI account answers yes:
+
+```yaml
+kind: Role
+metadata:
+  name: monitoring-editor
+rules:
+  - apiGroups: [monitoring.coreos.com]
+    resources: [alertmanagerconfigs, probes, prometheusrules, servicemonitors]
+    verbs: [get, list, watch, create, update, patch, delete]
+```
+
+bound to `system:serviceaccount:<namespace>:<ci-account>`.
+
+**CI cannot bootstrap that for itself.** A server-side dry-run as `github-deploy` is refused with `attempting to grant RBAC permissions not currently held`, which is Kubernetes' escalation prevention working as designed. The Role and RoleBinding have to be applied once by someone who already holds those verbs; in this namespace the `vshn` group has `monitoring-edit` and `alert-routing-edit`. Keep both objects in `deploy/` so they are recorded and re-applied, but the first apply is manual and has to happen before the manifests that need them.
+
+Still unverified: whether the platform Thanos exposes `kube_deployment_status_replicas_available` to us. Querying `thanos-querier-openshift-monitoring` with a namespace user's token returns `Forbidden (resource=prometheuses, subresource=api)`, so tier 1's expression has never been run against real data. Rule evaluation happens inside Prometheus and may well work where the ad-hoc query does not, but treat it as unproven until an alert actually arrives in Telegram.
 
 Instrumenting `/metrics` is worth doing regardless: it is useful for graphs before any alerting exists, and it is the prerequisite for all of the above.
 
