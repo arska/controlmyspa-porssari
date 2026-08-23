@@ -472,7 +472,7 @@ class TestSetTemp:
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_records_api_success_timestamp(self, mock_api_class):
-        """A successful read stamps the API success gauge."""
+        """A successful read stamps the API success gauge with a recent time."""
         mock_api = MagicMock()
         mock_api.current_temp = 36.0
         mock_api.desired_temp = 37.0
@@ -483,7 +483,13 @@ class TestSetTemp:
             app_module.set_temp(37)
 
         payload, _ = app_module.metrics.render()
-        assert b"spa_api_last_success_timestamp_seconds 0.0" not in payload
+        stamp = next(
+            float(line.split()[-1])
+            for line in payload.decode().splitlines()
+            if line.startswith("spa_api_last_success_timestamp_seconds ")
+        )
+        now = datetime.datetime.now(tz=datetime.UTC).timestamp()
+        assert abs(now - stamp) < 60
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
@@ -2867,3 +2873,22 @@ class TestMetricsEndpoint:
         app_module.heating_schedule = {current_hour.isoformat()}
         response = client.get("/metrics")
         assert b"spa_heating_scheduled 1.0" in response.data
+
+    def test_survives_a_naive_iso_key_in_hourly_prices(self, client):
+        """A bad price key must not turn /metrics into a 500.
+
+        datetime.fromisoformat(naive_key) >= aware_now raises TypeError, and an
+        unparsable key raises ValueError; either would take down every metric
+        family if _refresh_gauges() were unguarded.
+        """
+        app_module.hourly_prices = {"2026-08-23T10:00:00": 0.05}
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        assert b"spa_pool_temperature_celsius" in response.data
+
+    def test_survives_an_unparsable_key_in_hourly_prices(self, client):
+        """An unparsable price key must not turn /metrics into a 500."""
+        app_module.hourly_prices = {"not-a-timestamp": 0.05}
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        assert b"spa_pool_temperature_celsius" in response.data
