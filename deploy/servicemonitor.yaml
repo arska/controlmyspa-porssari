@@ -1,0 +1,15 @@
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: controlmyspa-porssari
+  labels:
+    app: controlmyspa-porssari
+spec:
+  selector:
+    matchLabels:
+      app: controlmyspa-porssari
+  endpoints:
+    - port: web
+      interval: 60s
+      path: /metrics
+      scheme: http
