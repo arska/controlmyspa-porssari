@@ -471,6 +471,22 @@ class TestSetTemp:
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
+    def test_records_api_success_timestamp(self, mock_api_class):
+        """A successful read stamps the API success gauge."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 36.0
+        mock_api.desired_temp = 37.0
+        mock_api_class.return_value = mock_api
+        app_module.metrics.API_LAST_SUCCESS.set(0)
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        payload, _ = app_module.metrics.render()
+        assert b"spa_api_last_success_timestamp_seconds 0.0" not in payload
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
     def test_manual_override_detection(self, mock_api_class):
         """Detects manual override when temp differs from HIGH/LOW."""
         mock_api = MagicMock()
@@ -2808,3 +2824,28 @@ class TestHistoryAPI:
         assert app_module.store.enabled is False
         resp = client.get("/api/history")
         assert resp.status_code == 503
+
+
+# --- Metrics endpoint tests ---
+
+
+class TestMetricsEndpoint:
+    """Tests for the /metrics endpoint."""
+
+    def test_serves_the_registry(self, client):
+        """/metrics exposes the spa gauges for the ServiceMonitor."""
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        assert b"spa_pool_temperature_celsius" in response.data
+
+    def test_reports_known_price_hours(self, client):
+        """The price-hours gauge counts future hours with a price."""
+        now = datetime.datetime.now(tz=datetime.UTC)
+        app_module.hourly_prices = {
+            (now + datetime.timedelta(hours=n))
+            .replace(minute=0, second=0, microsecond=0)
+            .isoformat(): 0.05
+            for n in range(1, 4)
+        }
+        response = client.get("/metrics")
+        assert b"spa_price_hours_known 3.0" in response.data

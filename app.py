@@ -25,6 +25,7 @@ from flask_caching import Cache
 from sentry_sdk.integrations.flask import FlaskIntegration
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import metrics
 import pricing
 import scheduling
 import storage
@@ -576,6 +577,13 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     pool["desired_temp"],
                     latest_outside_temp,
                 )
+                metrics.API_LAST_SUCCESS.set(
+                    datetime.datetime.now(tz=datetime.UTC).timestamp()
+                )
+                metrics.POOL_TEMPERATURE.set(pool["current_temp"])
+                metrics.DESIRED_TEMPERATURE.set(pool["desired_temp"])
+                if latest_outside_temp is not None:
+                    metrics.OUTSIDE_TEMPERATURE.set(latest_outside_temp)
 
                 APP.logger.info(
                     "current temp: %s, desired temp: %s",
@@ -639,6 +647,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     APP.logger.info("not changing desired temp %s", temp)
                 check_stale_temperature()
     except tenacity.RetryError as exception:
+        metrics.API_FAILURES.inc()
         APP.logger.info(
             "ignoring controlmyspa API error, retrying next control loop: %s",
             exception,
@@ -917,6 +926,32 @@ def api_history() -> flask.Response:
             "prices": store.prices_between(start, end),
         }
     )
+
+
+def _refresh_gauges() -> None:
+    """Fill the derived gauges from current state, at scrape time."""
+    now = datetime.datetime.now(tz=datetime.UTC)
+    metrics.COOLING_K.set(cooling_k)
+    metrics.HEATING_RATE.set(_heating_rate())
+    metrics.PRICE_HOURS_KNOWN.set(
+        sum(1 for key in hourly_prices if datetime.datetime.fromisoformat(key) >= now)
+    )
+    remaining = (manual_override_endtime - now).total_seconds()
+    metrics.OVERRIDE_REMAINING.set(max(remaining, 0))
+    hour_key = now.replace(minute=0, second=0, microsecond=0).isoformat()
+    metrics.HEATING_SCHEDULED.set(1 if hour_key in heating_schedule else 0)
+
+
+@APP.route("/metrics")
+def metrics_endpoint() -> flask.Response:
+    """Expose Prometheus metrics for the ServiceMonitor to scrape.
+
+    Unauthenticated, like `/`. It exposes water temperature, price counts and
+    the measured constants, none of which are secret.
+    """
+    _refresh_gauges()
+    payload, content_type = metrics.render()
+    return flask.Response(payload, mimetype=content_type)
 
 
 @APP.route("/telegram/<token>", methods=["POST"])
