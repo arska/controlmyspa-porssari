@@ -2849,3 +2849,21 @@ class TestMetricsEndpoint:
         }
         response = client.get("/metrics")
         assert b"spa_price_hours_known 3.0" in response.data
+
+    def test_reports_heating_scheduled_for_the_current_helsinki_hour(self, client):
+        """The heating-scheduled gauge matches control()'s own hour key.
+
+        heating_schedule keys are Helsinki-local ISO strings (inherited from
+        hourly_prices), so the gauge has to build its lookup key the same way
+        control() does, not from a UTC clock.
+        """
+        current_hour = datetime.datetime.now(ZoneInfo("Europe/Helsinki")).replace(
+            minute=0, second=0, microsecond=0
+        )
+
+        response = client.get("/metrics")
+        assert b"spa_heating_scheduled 0.0" in response.data
+
+        app_module.heating_schedule = {current_hour.isoformat()}
+        response = client.get("/metrics")
+        assert b"spa_heating_scheduled 1.0" in response.data

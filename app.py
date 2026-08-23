@@ -938,8 +938,12 @@ def _refresh_gauges() -> None:
     )
     remaining = (manual_override_endtime - now).total_seconds()
     metrics.OVERRIDE_REMAINING.set(max(remaining, 0))
-    hour_key = now.replace(minute=0, second=0, microsecond=0).isoformat()
-    metrics.HEATING_SCHEDULED.set(1 if hour_key in heating_schedule else 0)
+    current_hour = datetime.datetime.now(ZoneInfo("Europe/Helsinki")).replace(
+        minute=0, second=0, microsecond=0
+    )
+    metrics.HEATING_SCHEDULED.set(
+        1 if current_hour.isoformat() in heating_schedule else 0
+    )
 
 
 @APP.route("/metrics")
