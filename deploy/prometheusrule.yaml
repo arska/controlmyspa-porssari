@@ -1,0 +1,54 @@
+# deploy/prometheusrule.yaml
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: controlmyspa-porssari
+  labels:
+    app: controlmyspa-porssari
+spec:
+  groups:
+    - name: controlmyspa-porssari-infra
+      rules:
+        # If kube-state-metrics is not visible to the Prometheus that
+        # evaluates this rule, every other rule in this group is dead code
+        # that will never fire. absent() makes that fact page us once,
+        # instead of hiding as silence. Delete this rule once it has stayed
+        # quiet for a day.
+        - alert: SpaMetricsSourceMissing
+          expr: absent(kube_deployment_status_replicas_available{deployment="controlmyspa-porssari"})
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "kube_deployment_status_replicas_available is not visible here, so the infra alerts cannot fire"
+
+        - alert: SpaControllerDown
+          expr: kube_deployment_status_replicas_available{deployment="controlmyspa-porssari"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "The spa controller has no available replica, so the spa is not being controlled"
+
+        - alert: SpaControllerRestartLooping
+          expr: increase(kube_pod_container_status_restarts_total{container="controlmyspa-porssari"}[15m]) > 2
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} is restart-looping"
+
+        - alert: SpaControllerOOMKilled
+          expr: kube_pod_container_status_last_state_terminated_reason{container="controlmyspa-porssari", reason="OOMKilled"} > 0
+          labels:
+            severity: critical
+          annotations:
+            summary: "Pod {{ $labels.pod }} was OOM-killed"
+
+        - alert: SpaControllerNotReady
+          expr: kube_pod_status_ready{pod=~"controlmyspa-porssari.*", condition="false"} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{ $labels.pod }} has not been ready for 10 minutes"
