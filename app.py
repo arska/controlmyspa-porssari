@@ -25,6 +25,7 @@ from flask_caching import Cache
 from sentry_sdk.integrations.flask import FlaskIntegration
 from werkzeug.middleware.proxy_fix import ProxyFix
 
+import metrics
 import pricing
 import scheduling
 import storage
@@ -576,6 +577,11 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     pool["desired_temp"],
                     latest_outside_temp,
                 )
+                metrics.API_LAST_SUCCESS.set(
+                    datetime.datetime.now(tz=datetime.UTC).timestamp()
+                )
+                metrics.POOL_TEMPERATURE.set(pool["current_temp"])
+                metrics.DESIRED_TEMPERATURE.set(pool["desired_temp"])
 
                 APP.logger.info(
                     "current temp: %s, desired temp: %s",
@@ -639,6 +645,7 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     APP.logger.info("not changing desired temp %s", temp)
                 check_stale_temperature()
     except tenacity.RetryError as exception:
+        metrics.API_FAILURES.inc()
         APP.logger.info(
             "ignoring controlmyspa API error, retrying next control loop: %s",
             exception,
@@ -917,6 +924,68 @@ def api_history() -> flask.Response:
             "prices": store.prices_between(start, end),
         }
     )
+
+
+def _within_memory(key: str, now: datetime.datetime) -> bool:
+    """Return whether a price key is a future hour, tolerating a bad key.
+
+    hourly_prices keys are normally offset-aware ISO strings, but a stray
+    offset-naive or unparsable key must not take down the whole /metrics
+    response. Same defense as pricing.within_memory() and storage._as_aware()
+    apply to this same key space.
+    """
+    try:
+        price_time = datetime.datetime.fromisoformat(key)
+    except ValueError:
+        APP.logger.warning("ignoring price with unparsable timestamp %r", key)
+        return False
+    if price_time.tzinfo is None:
+        price_time = price_time.replace(tzinfo=datetime.UTC)
+    return price_time >= now
+
+
+def _refresh_gauges() -> None:
+    """Fill the derived gauges from current state, at scrape time.
+
+    Guarded so a bad derived value (for example an unparsable price key)
+    cannot turn the whole /metrics response into a 500: Prometheus would read
+    that as the target being down and lose every metric family, not just the
+    one that failed.
+    """
+    try:
+        now = datetime.datetime.now(tz=datetime.UTC)
+        metrics.COOLING_K.set(cooling_k)
+        metrics.HEATING_RATE.set(_heating_rate())
+        metrics.PRICE_HOURS_KNOWN.set(
+            sum(1 for key in hourly_prices if _within_memory(key, now))
+        )
+        remaining = (manual_override_endtime - now).total_seconds()
+        metrics.OVERRIDE_REMAINING.set(max(remaining, 0))
+        current_hour = now.astimezone(ZoneInfo("Europe/Helsinki")).replace(
+            minute=0, second=0, microsecond=0
+        )
+        metrics.HEATING_SCHEDULED.set(
+            1 if current_hour.isoformat() in heating_schedule else 0
+        )
+        if latest_outside_temp is not None:
+            metrics.OUTSIDE_TEMPERATURE.set(latest_outside_temp)
+    except Exception:  # pylint: disable=broad-exception-caught
+        # Deliberately broad: an unparsable price key or any other derived-
+        # gauge failure must not turn /metrics into a 500, which Prometheus
+        # would read as the target being down and lose every metric family.
+        APP.logger.exception("failed to refresh derived metrics")
+
+
+@APP.route("/metrics")
+def metrics_endpoint() -> flask.Response:
+    """Expose Prometheus metrics for the ServiceMonitor to scrape.
+
+    Unauthenticated, like `/`. It exposes water temperature, price counts and
+    the measured constants, none of which are secret.
+    """
+    _refresh_gauges()
+    payload, content_type = metrics.render()
+    return flask.Response(payload, mimetype=content_type)
 
 
 @APP.route("/telegram/<token>", methods=["POST"])

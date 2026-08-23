@@ -1,0 +1,26 @@
+# Namespace-scoped, so no cluster-admin is involved. The bot token is read by
+# reference from the Secret the app already uses, which is why this needs no
+# new secret and no SOPS round trip. chatID has no secret reference in the
+# CRD, so it is inline.
+apiVersion: monitoring.coreos.com/v1beta1
+kind: AlertmanagerConfig
+metadata:
+  name: controlmyspa-porssari
+  labels:
+    app: controlmyspa-porssari
+spec:
+  receivers:
+    - name: telegram
+      telegramConfigs:
+        - apiURL: https://api.telegram.org
+          botToken:
+            name: controlmyspa-porssari
+            key: TELEGRAM_BOT_TOKEN
+          chatID: 1828500044
+          parseMode: HTML
+  route:
+    receiver: telegram
+    groupBy: [alertname]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 12h
