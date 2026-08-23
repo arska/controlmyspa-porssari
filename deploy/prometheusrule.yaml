@@ -39,7 +39,14 @@ spec:
             summary: "Pod {{ $labels.pod }} is restart-looping"
 
         - alert: SpaControllerOOMKilled
-          expr: kube_pod_container_status_last_state_terminated_reason{container="controlmyspa-porssari", reason="OOMKilled"} > 0
+          # kube_pod_container_status_last_state_terminated_reason describes the
+          # LAST terminated state of the container within the pod object. After
+          # an OOM kill the container restarts, the pod object survives, and
+          # this series stays at 1 for the rest of the pod's life. Bounding it
+          # to a restart in the last 15m stops it from re-firing every
+          # repeatInterval forever after a single OOM kill. Do not simplify
+          # this back to the bare "last_state" check.
+          expr: increase(kube_pod_container_status_restarts_total{container="controlmyspa-porssari"}[15m]) > 0 and on(pod) kube_pod_container_status_last_state_terminated_reason{container="controlmyspa-porssari", reason="OOMKilled"} == 1
           labels:
             severity: critical
           annotations:

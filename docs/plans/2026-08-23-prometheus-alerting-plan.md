@@ -21,6 +21,12 @@
 - `oc apply -f deploy/` is a single deploy step. Any object the CI account may not create fails the whole deploy, app included.
 - Telegram credentials already exist in the namespace Secret `controlmyspa-porssari`, keys `TELEGRAM_BOT_TOKEN` (46 bytes) and `TELEGRAM_CHAT_ID` (10 bytes, a single id). Never print either value.
 
+## Merge gate
+
+No file under `deploy/` matching `rbac|alertmanagerconfig|prometheusrule|servicemonitor` may reach `main` until a human has applied `deploy/rbac.yaml`. This covers PR 1 and PR 2 equally: PR 1 carries `prometheusrule.yaml` and `alertmanagerconfig.yaml` alongside `rbac.yaml` itself, and lands first, so it trips the gate first.
+
+The failure mode this guards against is worse than an outage, and worth spelling out because it is quiet: `kubectl apply` continues past per-object errors and exits non-zero, and the deploy workflow's `run:` block executes under `bash -e`, so a non-zero exit from `kubectl apply` skips the `oc rollout restart` and `oc rollout status` steps that follow it. The app does not go down. The freshly built image is simply never rolled out, the old pod keeps serving traffic, and the only signal is a red CI job. It repeats on every subsequent deploy, because `rbac.yaml` cannot self-bootstrap: the CI service account can only apply it once it already holds the verbs the manifest grants.
+
 ## Out of scope
 
 The deploy-failure Telegram notification described at the end of the spec is deliberately not in this plan. It answers a different question (why a deploy failed, not whether the spa is being controlled), touches only `.github/workflows/docker-image.yml`, and needs none of the work here. Do it as its own change.

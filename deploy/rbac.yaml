@@ -30,6 +30,10 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: Role
   name: monitoring-editor
+# The namespace below must track vars.OPENSHIFT_NAMESPACE in
+# .github/workflows/docker-image.yml. A ServiceAccount subject needs a
+# namespace and cannot be made namespace-agnostic like the rest of deploy/;
+# a mismatch here silently grants the RoleBinding to the wrong account.
 subjects:
   - kind: ServiceAccount
     name: github-deploy
