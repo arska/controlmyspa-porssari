@@ -12,7 +12,7 @@ jobs:
     name: "run nox"
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       - name: Lint and test with nox
@@ -23,7 +23,7 @@ jobs:
     name: "docker smoke test"
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           python-version: "3.14"
       # Builds the image and runs it: an image that cannot start must never
