@@ -84,13 +84,6 @@ store = storage.Store()  # disabled until init_db() opens SQLITE_PATH
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
 manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 
-last_stale_alert_time = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
-STALE_ALERT_ACTIVE = False
-# A heating block is 1-2h, so a longer window would never sit inside one.
-STALE_HEATING_MINUTES = 90
-STALE_IDLE_MINUTES = 720
-STUCK_FRACTION = 0.25  # stuck if the pool moved less than this much of expected
-MIN_STALE_READINGS = 3
 SCHEDULE_START_DELAY = 60  # seconds; long enough for the first reading to land
 FORECAST_HOURS = 48  # how far the chart's predicted temperature runs
 DEFAULT_OUTSIDE_TEMP = 15.0  # used only until the first weather fetch lands
@@ -145,76 +138,6 @@ def format_duration(total_minutes: int) -> str:
     if hours > 0:
         return f"{hours}h {mins}min"
     return f"{mins}min"
-
-
-def check_stale_temperature() -> None:
-    """Alert via Telegram when the spa stops responding to what we command.
-
-    The pool is "stuck" when it moves far less than the thermal model says it
-    should — not when it fails to move a fixed 0.5°C, which a slowly cooling
-    pool never manages anyway. Only the current heating mode counts: the first
-    minutes of a heating block say nothing about whether the gateway is alive.
-    """
-    global last_stale_alert_time, STALE_ALERT_ACTIVE  # noqa: PLW0603
-
-    temp_high = int(os.getenv("TEMP_HIGH", "0"))
-    history = list(temperature_history)
-    if len(history) < MIN_STALE_READINGS:
-        return
-
-    stretch, heating = thermal.mode_stretch(history, temp_high)
-    stale_minutes = STALE_HEATING_MINUTES if heating else STALE_IDLE_MINUTES
-    now = datetime.datetime.now(tz=datetime.UTC)
-    cutoff = now - datetime.timedelta(minutes=stale_minutes)
-
-    window = [
-        r for r in stretch if datetime.datetime.fromisoformat(r["time"]) >= cutoff
-    ]
-    if len(window) < MIN_STALE_READINGS:
-        return
-    # The stretch must cover the whole window. After a restart, or 20 minutes
-    # into a heating block, there is nothing to conclude yet.
-    if datetime.datetime.fromisoformat(stretch[0]["time"]) > cutoff:
-        return
-
-    temps = [r["current_temp"] for r in window]
-    observed = max(temps) - min(temps)
-    outside = (
-        latest_outside_temp if latest_outside_temp is not None else DEFAULT_OUTSIDE_TEMP
-    )
-    expected = (
-        thermal.expected_gain(window, temp_high, _heating_rate())
-        if heating
-        else thermal.expected_drop(window, cooling_k, outside)
-    )
-    latest = history[-1]
-
-    if expected > 0 and observed < expected * STUCK_FRACTION:
-        # Repeat the alert once per stale window
-        if (now - last_stale_alert_time).total_seconds() < stale_minutes * 60:
-            STALE_ALERT_ACTIVE = True
-            return
-        stuck_minutes = int(
-            (now - datetime.datetime.fromisoformat(window[0]["time"])).total_seconds()
-            / 60
-        )
-        mode = "heating" if heating else "idle"
-        send_telegram(
-            f"\u26a0\ufe0f Spa temperature stuck at {latest['current_temp']}\u00b0C"
-            f" for {format_duration(stuck_minutes)} ({mode} mode,"
-            f" desired {latest['desired_temp']}\u00b0C):"
-            f" moved {observed:.1f}\u00b0C, expected {expected:.1f}\u00b0C."
-            f" Gateway may be offline."
-        )
-        last_stale_alert_time = now
-        STALE_ALERT_ACTIVE = True
-    elif STALE_ALERT_ACTIVE:
-        send_telegram(
-            f"\u2705 Spa temperature is changing again"
-            f" (now {latest['current_temp']}\u00b0C)."
-            f" Gateway appears to be back online."
-        )
-        STALE_ALERT_ACTIVE = False
 
 
 def init_db() -> None:
@@ -684,7 +607,6 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     APP.logger.info("set desired temp %s", temp)
                 else:
                     APP.logger.info("not changing desired temp %s", temp)
-                check_stale_temperature()
     except tenacity.RetryError as exception:
         metrics.API_FAILURES.inc()
         # RetryError only says that retries ran out. The cause is on the last
