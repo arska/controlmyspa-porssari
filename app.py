@@ -8,6 +8,7 @@ based whirlpools accordingly.
 import collections
 import datetime
 import functools
+import http
 import logging
 import os
 from typing import TYPE_CHECKING
@@ -493,6 +494,28 @@ def control(*, skip_override_detection: bool = False) -> None:
             )
 
 
+def _is_transient(error: BaseException | None) -> bool:
+    """Whether a ControlMySpa failure is an outage, not something to act on.
+
+    Timeouts, dropped connections, server errors and an offline gateway end on
+    their own. A 4xx (rejected credentials, a removed endpoint) or a response
+    of the wrong shape stays broken until the code or the account changes.
+    """
+    if isinstance(error, requests.exceptions.HTTPError):
+        return (
+            error.response is not None
+            and error.response.status_code >= http.HTTPStatus.INTERNAL_SERVER_ERROR
+        )
+    return isinstance(
+        error,
+        (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            SpaOfflineError,
+        ),
+    )
+
+
 def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
     """Update the pool temperature.
 
@@ -612,7 +635,10 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
         # RetryError only says that retries ran out. The cause is on the last
         # attempt, and without it a changed API looks like a flaky one.
         cause = exception.last_attempt.exception()
-        sentry_sdk.capture_exception(cause)
+        # Balboa is down for under an hour several times a month. That fixes
+        # itself, and an outage that does not is SpaApiUnreachable's to report.
+        if not _is_transient(cause):
+            sentry_sdk.capture_exception(cause)
         APP.logger.warning(
             "controlmyspa API failed after retries, trying again next control loop: %r",
             cause,

@@ -76,11 +76,15 @@ spec:
             summary: "The spa metrics endpoint is not being scraped, so no spa alert can fire"
 
         # A fact, not an inference: the control loop runs every 15 minutes, so
-        # an hour without a successful read means the API or the gateway is
-        # gone. The app seeds this gauge from SQLite on startup, so a restart
-        # neither resets the clock nor hides an outage that spans it.
+        # six hours without a successful read means the API or the gateway is
+        # gone for good. 6h, not 1h, because Balboa is down for under an hour
+        # several times a month and fixes itself; July 13 to September 15 held
+        # one 5.2h gap and the week-long 404. The pool loses under 2 C in six
+        # hours at the low setpoint. The app seeds this gauge from SQLite on
+        # startup, so a restart neither resets the clock nor hides an outage
+        # that spans it.
         - alert: SpaApiUnreachable
-          expr: time() - spa_api_last_success_timestamp_seconds > 3600
+          expr: time() - spa_api_last_success_timestamp_seconds > 21600
           labels:
             severity: critical
           annotations:

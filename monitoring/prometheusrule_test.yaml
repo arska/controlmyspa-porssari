@@ -8,23 +8,28 @@ evaluation_interval: 1m
 
 tests:
   # The 2026-09 outage: the pod kept running, every ControlMySpa read failed.
-  - name: an hour without a successful read pages
+  # Balboa's routine outages last under an hour, and the longest short one on
+  # record 5.2h, so neither of those pages; six hours does.
+  - name: six hours without a successful read pages, five do not
     interval: 15m
     input_series:
       - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
-        values: "0+900x4 3600x12"
+        values: "0+900x4 3600x32"
     alert_rule_test:
-      - eval_time: 1h
+      - eval_time: 2h
         alertname: SpaApiUnreachable
         exp_alerts: []
-      - eval_time: 2h15m
+      - eval_time: 6h
+        alertname: SpaApiUnreachable
+        exp_alerts: []
+      - eval_time: 7h15m
         alertname: SpaApiUnreachable
         exp_alerts:
           - exp_labels:
               pod: a
               severity: critical
             exp_annotations:
-              summary: "No successful ControlMySpa read for 1h 15m 0s"
+              summary: "No successful ControlMySpa read for 6h 15m 0s"
 
   # The app seeds the gauge from SQLite, so the new pod carries on the clock.
   - name: a restart does not page as an outage
