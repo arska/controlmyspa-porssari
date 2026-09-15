@@ -12,3 +12,4 @@ coverage.xml
 .playwright-mcp
 deploy/secret.yaml.tmp
 .claude/settings.local.json
+backups/
