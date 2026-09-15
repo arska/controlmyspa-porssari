@@ -59,3 +59,76 @@ spec:
             severity: warning
           annotations:
             summary: "Pod {{ $labels.pod }} has not been ready for 10 minutes"
+
+    # Metrics the app exports about the spa itself. The group above only knows
+    # whether the pod runs; a pod that runs but cannot reach the spa looks
+    # healthy to it, which is how a week without readings went unnoticed.
+    - name: controlmyspa-porssari-spa
+      rules:
+        # Same reasoning as SpaMetricsSourceMissing: if the ServiceMonitor is
+        # not working, silence would look identical to health.
+        - alert: SpaMetricsNotScraped
+          expr: absent(spa_api_last_success_timestamp_seconds)
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "The spa metrics endpoint is not being scraped, so no spa alert can fire"
+
+        # A fact, not an inference: the control loop runs every 15 minutes, so
+        # an hour without a successful read means the API or the gateway is
+        # gone. The app seeds this gauge from SQLite on startup, so a restart
+        # neither resets the clock nor hides an outage that spans it.
+        - alert: SpaApiUnreachable
+          expr: time() - spa_api_last_success_timestamp_seconds > 3600
+          labels:
+            severity: critical
+          annotations:
+            summary: "No successful ControlMySpa read for {{ $value | humanizeDuration }}"
+
+        # The API can answer while the gateway behind it is dead, returning the
+        # same value forever. 12h because a pool holding at setpoint legitimately
+        # sits in one 0.5 C bucket for hours.
+        #
+        # Every pod restart starts a new series (the pod label changes), and
+        # changes() over a 30-minute-old series is 0, so the series are merged
+        # first and 12h of data are required (144 steps, one hour of gaps
+        # tolerated). Only while reads succeed: during an API outage the gauge
+        # is frozen too, and SpaApiUnreachable already says so.
+        - alert: SpaReadingFrozen
+          expr: >
+            changes(max(spa_pool_temperature_celsius)[12h:5m]) == 0
+            and on() count_over_time(max(spa_pool_temperature_celsius)[12h:5m]) > 132
+            and on() time() - max(spa_api_last_success_timestamp_seconds) < 3600
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pool temperature has not moved in 12 hours, the gateway may be stuck"
+
+        # 33 rather than TEMP_MIN (34), so a single sensor tick below the
+        # target does not page.
+        - alert: SpaTooCold
+          expr: spa_pool_temperature_celsius < 33
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pool is at {{ $value }} C, below TEMP_MIN, and has not recovered in an hour"
+
+        - alert: SpaOverrideLeftOn
+          expr: min_over_time(spa_manual_override_seconds_remaining[24h]) > 0
+          labels:
+            severity: info
+          annotations:
+            summary: "Manual override has been continuously active for 24 hours"
+
+        # 3h because the horizon is legitimately short just before the 14:00
+        # publication of tomorrow's prices.
+        - alert: SpaPricesStale
+          expr: spa_price_hours_known < 4
+          for: 3h
+          labels:
+            severity: warning
+          annotations:
+            summary: "Fewer than 4 future hours have a known price, spot-hinta may be failing"

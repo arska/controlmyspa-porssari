@@ -10,13 +10,15 @@ import nox
 
 nox.options.default_venv_backend = "uv"
 nox.options.reuse_venv = "yes"
-nox.options.sessions = ["ruff", "pylint", "tests", "docker"]
+nox.options.sessions = ["ruff", "pylint", "tests", "alerts", "docker"]
 
 IMAGE = "controlmyspa-porssari:test"
 SMOKE_CONTAINER = "controlmyspa-porssari-smoke"
 SMOKE_PORT = 18080
 SMOKE_TIMEOUT_SECONDS = 90
 HTTP_OK = 200
+# Pinned so a promtool release cannot change what the rule tests accept.
+PROMETHEUS_IMAGE = "prom/prometheus:v3.14.0"
 
 
 def _project_deps() -> list[str]:
@@ -65,6 +67,43 @@ def tests(session: nox.Session) -> None:
         "--cov=thermal",
         "--cov-report=term",
         "--cov-report=xml:coverage.xml",
+    )
+
+
+@nox.session
+def alerts(session: nox.Session) -> None:
+    """Unit-test the alert rules with promtool.
+
+    A rule that parses can still never fire, or fire after every restart.
+    promtool replays synthetic series through the real rules and checks both.
+    """
+    session.install("pyyaml")
+    workdir = Path(session.create_tmp()).resolve()
+    session.run(
+        "python",
+        "-c",
+        "import sys, yaml;"
+        " rule = yaml.safe_load(open('deploy/prometheusrule.yaml'));"
+        " yaml.safe_dump(rule['spec'], open(sys.argv[1], 'w'))",
+        str(workdir / "rules.yaml"),
+    )
+    tests_file = Path("monitoring/prometheusrule_test.yaml")
+    (workdir / tests_file.name).write_text(tests_file.read_text())
+    session.run(
+        "docker",
+        "run",
+        "--rm",
+        "--volume",
+        f"{workdir}:/work:ro",
+        "--workdir",
+        "/work",
+        "--entrypoint",
+        "promtool",
+        PROMETHEUS_IMAGE,
+        "test",
+        "rules",
+        tests_file.name,
+        external=True,
     )
 
 

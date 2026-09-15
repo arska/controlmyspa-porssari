@@ -231,6 +231,16 @@ def init_db() -> None:
     readings = store.newest_readings(temperature_history.maxlen)
     temperature_history.extend(readings)
     APP.logger.info("loaded %d temperature readings from SQLite", len(readings))
+    if readings:
+        # Every stored reading is a successful ControlMySpa read. Without this
+        # a restart resets the gauges to 0, and an outage that spans a restart
+        # is indistinguishable from a pod that has not polled yet.
+        newest = readings[-1]
+        metrics.API_LAST_SUCCESS.set(
+            datetime.datetime.fromisoformat(newest["time"]).timestamp()
+        )
+        metrics.POOL_TEMPERATURE.set(newest["current_temp"])
+        metrics.DESIRED_TEMPERATURE.set(newest["desired_temp"])
 
     # Backfill recent prices so the chart keeps its history across restarts
     cutoff = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(
