@@ -48,16 +48,33 @@ jobs:
     steps:
       - name: Check out the repo
         uses: actions/checkout@v7
-      - name: Build, tag, push
-        uses: cresh-io/action-docker-image-build-tag-push@v1
+      # Written out rather than through a wrapper action: Renovate only updates
+      # actions named here, and cresh-io/action-docker-image-build-tag-push
+      # stopped updating its own in 2023.
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/login-action@v4
         with:
-          registry: "ghcr.io"
-          username: "${{ github.actor }}"
-          password: "${{ secrets.GITHUB_TOKEN }}"
-          image-name: "${{ github.repository }}"
-          github-sha: "${{ github.sha }}"
-          action: "${{ github.event.action }}"
-          merged: "${{ github.event.pull_request.merged }}"
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          # deploy/deployment.yaml pulls :main
+          tags: |
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: true
+          provenance: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   deploy:
     needs: [test, smoke, alerts, build]
