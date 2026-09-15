@@ -31,6 +31,18 @@ jobs:
       - name: Build and run the image
         run: uvx nox -s docker
 
+  alerts:
+    runs-on: ubuntu-latest
+    name: "alert rule tests"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.1.0
+        with:
+          python-version: "3.14"
+      # Rules are applied with the app; one that cannot fire is worse than none.
+      - name: Test the alert rules with promtool
+        run: uvx nox -s alerts
+
   build:
     runs-on: ubuntu-latest
     steps:
@@ -48,7 +60,7 @@ jobs:
           merged: "${{ github.event.pull_request.merged }}"
 
   deploy:
-    needs: [test, smoke, build]
+    needs: [test, smoke, alerts, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:

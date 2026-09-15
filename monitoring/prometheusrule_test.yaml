@@ -1,0 +1,163 @@
+# promtool unit tests for deploy/prometheusrule.yaml. Run with `uvx nox -s alerts`,
+# which extracts the rule groups from the PrometheusRule into rules.yaml first.
+# Kept out of deploy/ because CI applies that directory wholesale.
+rule_files:
+  - rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # The 2026-09 outage: the pod kept running, every ControlMySpa read failed.
+  - name: an hour without a successful read pages
+    interval: 15m
+    input_series:
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+900x4 3600x12"
+    alert_rule_test:
+      - eval_time: 1h
+        alertname: SpaApiUnreachable
+        exp_alerts: []
+      - eval_time: 2h15m
+        alertname: SpaApiUnreachable
+        exp_alerts:
+          - exp_labels:
+              pod: a
+              severity: critical
+            exp_annotations:
+              summary: "No successful ControlMySpa read for 1h 15m 0s"
+
+  # The app seeds the gauge from SQLite, so the new pod carries on the clock.
+  - name: a restart does not page as an outage
+    interval: 15m
+    input_series:
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+900x8"
+      - series: 'spa_api_last_success_timestamp_seconds{pod="b"}'
+        values: "_x9 8100+900x8"
+    alert_rule_test:
+      - eval_time: 2h15m
+        alertname: SpaApiUnreachable
+        exp_alerts: []
+      - eval_time: 4h
+        alertname: SpaApiUnreachable
+        exp_alerts: []
+
+  - name: a missing scrape target is reported, not mistaken for health
+    interval: 1m
+    input_series:
+      - series: 'up{job="unrelated"}'
+        values: "1x40"
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: SpaMetricsNotScraped
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "The spa metrics endpoint is not being scraped, so no spa alert can fire"
+
+  - name: a scraped target keeps SpaMetricsNotScraped quiet
+    interval: 1m
+    input_series:
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+60x40"
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: SpaMetricsNotScraped
+        exp_alerts: []
+
+  - name: a pool frozen for 12h while reads succeed pages
+    interval: 5m
+    input_series:
+      - series: 'spa_pool_temperature_celsius{pod="a"}'
+        values: "36.5x160"
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+300x160"
+    alert_rule_test:
+      - eval_time: 13h
+        alertname: SpaReadingFrozen
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Pool temperature has not moved in 12 hours, the gateway may be stuck"
+
+  # Every restart starts a new series. A rule on the raw series pages here.
+  - name: a steady pool shortly after a pod restart is not frozen
+    interval: 5m
+    input_series:
+      - series: 'spa_pool_temperature_celsius{pod="a"}'
+        values: "36.5x12"
+      - series: 'spa_pool_temperature_celsius{pod="b"}'
+        values: "_x12 36.5x24"
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+300x12"
+      - series: 'spa_api_last_success_timestamp_seconds{pod="b"}'
+        values: "_x12 3900+300x24"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: SpaReadingFrozen
+        exp_alerts: []
+
+  - name: a moving pool is not frozen
+    interval: 5m
+    input_series:
+      - series: 'spa_pool_temperature_celsius{pod="a"}'
+        values: "36.5x80 36x80"
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+300x160"
+    alert_rule_test:
+      - eval_time: 13h
+        alertname: SpaReadingFrozen
+        exp_alerts: []
+
+  # During an API outage the pool gauge is frozen too; one page is enough.
+  - name: an API outage does not also page as a frozen reading
+    interval: 5m
+    input_series:
+      - series: 'spa_pool_temperature_celsius{pod="a"}'
+        values: "36.5x160"
+      - series: 'spa_api_last_success_timestamp_seconds{pod="a"}'
+        values: "0+300x12 3600x148"
+    alert_rule_test:
+      - eval_time: 13h
+        alertname: SpaReadingFrozen
+        exp_alerts: []
+
+  - name: a cold pool pages after an hour
+    interval: 5m
+    input_series:
+      - series: 'spa_pool_temperature_celsius{pod="a"}'
+        values: "32.5x20"
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: SpaTooCold
+        exp_alerts: []
+      - eval_time: 1h30m
+        alertname: SpaTooCold
+        exp_alerts:
+          - exp_labels:
+              pod: a
+              severity: warning
+            exp_annotations:
+              summary: "Pool is at 32.5 C, below TEMP_MIN, and has not recovered in an hour"
+
+  # Samples every minute, as scraped: the 5m lookback drops sparser samples
+  # between points, which resets the 3h pending state.
+  - name: prices running out page after 3h
+    interval: 1m
+    input_series:
+      - series: 'spa_price_hours_known{pod="a"}'
+        values: "3x240"
+    alert_rule_test:
+      - eval_time: 2h30m
+        alertname: SpaPricesStale
+        exp_alerts: []
+      - eval_time: 3h30m
+        alertname: SpaPricesStale
+        exp_alerts:
+          - exp_labels:
+              pod: a
+              severity: warning
+            exp_annotations:
+              summary: "Fewer than 4 future hours have a known price, spot-hinta may be failing"

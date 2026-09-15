@@ -1,6 +1,6 @@
 # Prometheus Monitoring with Telegram Alerting
 
-**Status:** not started. Adopt the pattern already running in Landingpager.
+**Status:** PR 1 and 2 shipped in 2026-08 (infra alerts, `/metrics`, ServiceMonitor). The spa rules (Task 7) shipped 2026-09-15, after a week without readings raised no alert. Task 8, deleting `check_stale_temperature()`, waits on `SpaMetricsNotScraped` staying quiet in production.
 
 ## Why
 
