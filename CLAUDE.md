@@ -110,7 +110,7 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 
 ## Monitoring and Deployment
 
-- **Alerting must live outside the process it watches.** Every alert this app sends — the stale-temperature warning, the startup healthcheck — needs the app running, so none of them fire when it dies. That is the failure mode that matters most. See `docs/plans/2026-08-22-prometheus-telegram-alerting.md`: adopt Prometheus + Alertmanager with Telegram alerting from Landingpager, and retire the in-app heuristics it replaces.
+- **Alerting must live outside the process it watches.** Messages this app sends itself, like the startup notice, need the app running, so none of them fire when it dies, which is the failure mode that matters most. Spa alerting therefore lives in Prometheus and Alertmanager (see Alerting below and `docs/plans/2026-08-22-prometheus-telegram-alerting.md`). Do not add alerting heuristics back into the app.
 - **Alert rules live in `deploy/prometheusrule.yaml` and are unit-tested.** `monitoring/prometheusrule_test.yaml` replays synthetic series through them with promtool (`uvx nox -s alerts`, Docker required); the deploy waits on it. Every pod restart starts a new series, so a rule over `changes()` or `absent()` needs a restart case. `init_db()` seeds `spa_api_last_success_timestamp_seconds` from the newest SQLite reading, so `SpaApiUnreachable` survives a restart.
 - **A build that succeeds proves nothing — run the image.** `nox -s docker` builds it *and* starts it, and the deploy job waits on that. An image that cannot start otherwise shows up only as a rollout timing out two minutes later.
 - **New module? Check the Dockerfile.** It copies named files, not the tree. `test_dockerfile.py` fails when an imported module is missing.
@@ -122,9 +122,9 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 2. **ControlMySpa** (via `controlmyspa` package): Authenticates to `iot.controlmyspa.com`, reads/writes spa temperatures. Retries with exponential backoff (tenacity, up to 10 minutes).
 3. **Open-Meteo** (`https://api.open-meteo.com/v1/forecast`): Free, keyless weather API. `update_weather()` reads `current.temperature_2m` for WEATHER_LAT/WEATHER_LON. On failure the last value is kept.
 
-## Stale Temperature Alerts
+## Alerting
 
-`check_stale_temperature()` (called from `set_temp()`) warns via Telegram when the spa stops responding. It compares the pool's actual movement against what the thermal model expects — `heating_rate × hours` while heating (capped by the headroom to TEMP_HIGH), `cooling_k × ΔT × hours` while idle — and alerts below `STUCK_FRACTION` (25%) of that. Only readings in the current heating mode count, and the mode stretch must cover the whole window (90 min heating / 12h idle); otherwise the first minutes of a heating block get judged against hours of cooling, which is how a normal night reads as a dead gateway.
+Alerts about the spa live in Prometheus, not in the app: `deploy/prometheusrule.yaml` (pod health, `SpaApiUnreachable`, `SpaReadingFrozen`, `SpaTooCold`, `SpaPricesStale`, ...) evaluated against the gauges in `metrics.py`, delivered to Telegram by `deploy/alertmanagerconfig.yaml`, unit-tested with promtool in `monitoring/prometheusrule_test.yaml`. The in-app `check_stale_temperature()` heuristic was removed on 2026-09-15: it ran on the success path of `set_temp()`, so the week in which every read failed never reached it.
 
 ## Manual Override Logic
 

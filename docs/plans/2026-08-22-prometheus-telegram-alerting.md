@@ -1,6 +1,6 @@
 # Prometheus Monitoring with Telegram Alerting
 
-**Status:** PR 1 and 2 shipped in 2026-08 (infra alerts, `/metrics`, ServiceMonitor). The spa rules (Task 7) shipped 2026-09-15, after a week without readings raised no alert. Task 8, deleting `check_stale_temperature()`, waits on `SpaMetricsNotScraped` staying quiet in production.
+**Status:** PR 1 and 2 shipped in 2026-08 (infra alerts, `/metrics`, ServiceMonitor). The spa rules (Task 7) shipped 2026-09-15, after a week without readings raised no alert. Task 8, deleting `check_stale_temperature()`, shipped the same day: its precondition was met once `SpaApiUnreachable` fired in production from the scraped spa series. The plan is complete.
 
 ## Why
 
