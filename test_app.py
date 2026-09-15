@@ -564,22 +564,115 @@ class TestUpdateWeather:
     @patch("app.requests.get")
     def test_fetches_outside_temp_and_forecast(self, mock_get):
         """Successfully parses Open-Meteo response with current + hourly forecast."""
-        mock_response = MagicMock()
-        mock_response.json.return_value = {
-            "current": {"temperature_2m": 12.3},
-            "hourly": {
-                "time": ["2026-07-22T21:00", "2026-07-22T22:00"],
-                "temperature_2m": [12.0, 11.5],
-            },
-        }
-        mock_get.return_value = mock_response
+        now = datetime.datetime.now(datetime.UTC)
+        mock_get.return_value, base = self._open_meteo([1, 2], now)
 
         with app_module.APP.app_context():
             app_module.update_weather()
 
         assert app_module.latest_outside_temp == 12.3
         assert len(app_module.weather_forecast) == 2
-        assert app_module.weather_forecast["2026-07-22T21:00"] == 12.0
+        next_hour = (base + datetime.timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M")
+        assert app_module.weather_forecast[next_hour] == 11.0
+
+    @staticmethod
+    def _open_meteo(hour_offsets, now):
+        """Build an Open-Meteo body with hourly values at `hour_offsets` from `now`.
+
+        Times are naive UTC, as Open-Meteo returns them without a timezone.
+        """
+        base = now.replace(minute=0, second=0, microsecond=0)
+        times = [
+            (base + datetime.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M")
+            for h in hour_offsets
+        ]
+        response = MagicMock()
+        response.json.return_value = {
+            "current": {"temperature_2m": 12.3},
+            "hourly": {
+                "time": times,
+                "temperature_2m": [10.0 + h for h in hour_offsets],
+            },
+        }
+        return response, base
+
+    @patch("app.requests.get")
+    def test_asks_for_the_past_two_weeks(self, mock_get):
+        """past_days is ignored once forecast_hours is set; past_hours is not."""
+        mock_get.return_value, _ = self._open_meteo(
+            [0], datetime.datetime.now(datetime.UTC)
+        )
+        with app_module.APP.app_context():
+            app_module.update_weather()
+
+        params = mock_get.call_args.args[1]
+        assert params["past_hours"] == app_module.WEATHER_PAST_HOURS == 14 * 24
+        assert "past_days" not in params
+
+    @patch("app.requests.get")
+    def test_stores_past_hours_without_a_spa_reading(
+        self, mock_get, tmp_path, monkeypatch
+    ):
+        """Outside temperature persists on its own, so a spa outage leaves no gap.
+
+        Every fetch rewrites the past two weeks, which is also what fills a gap
+        left by an app or weather outage.
+        """
+        monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
+        with app_module.APP.app_context():
+            app_module.init_db()
+        now = datetime.datetime.now(datetime.UTC)
+        mock_get.return_value, base = self._open_meteo([-48, -1, 0, 1, 2], now)
+
+        with app_module.APP.app_context():
+            app_module.update_weather()
+
+        stored = app_module.store.weather_between(
+            base - datetime.timedelta(days=3), base + datetime.timedelta(days=1)
+        )
+        assert stored == [
+            {
+                "time": (base + datetime.timedelta(hours=h)).isoformat(),
+                "outside_temp": 10.0 + h,
+            }
+            for h in (-48, -1, 0)
+        ]
+        assert not app_module.temperature_history
+        app_module.store.close()
+
+    @patch("app.requests.get")
+    def test_forecast_starts_at_the_current_hour(self, mock_get):
+        """The past hours fetched for storage must not turn up as forecast."""
+        now = datetime.datetime.now(datetime.UTC)
+        mock_get.return_value, base = self._open_meteo([-48, -1, 0, 1], now)
+
+        with app_module.APP.app_context():
+            app_module.update_weather()
+
+        assert sorted(app_module.weather_forecast) == [
+            (base + datetime.timedelta(hours=h)).strftime("%Y-%m-%dT%H:%M")
+            for h in (0, 1)
+        ]
+
+    @patch("app.requests.get")
+    def test_skips_hours_without_a_value(self, mock_get, tmp_path, monkeypatch):
+        """Open-Meteo returns null for hours it has no value for; store none."""
+        monkeypatch.setenv("SQLITE_PATH", str(tmp_path / "test.db"))
+        with app_module.APP.app_context():
+            app_module.init_db()
+        now = datetime.datetime.now(datetime.UTC)
+        response, base = self._open_meteo([-2, -1], now)
+        response.json.return_value["hourly"]["temperature_2m"] = [None, 9.0]
+        mock_get.return_value = response
+
+        with app_module.APP.app_context():
+            app_module.update_weather()
+
+        stored = app_module.store.weather_between(
+            base - datetime.timedelta(hours=3), base
+        )
+        assert [row["outside_temp"] for row in stored] == [9.0]
+        app_module.store.close()
 
     @patch("app.requests.get", side_effect=requests.exceptions.ConnectionError("no"))
     def test_keeps_last_value_on_error(self, mock_get):
@@ -2838,6 +2931,66 @@ class TestHistoryAPI:
         assert len(data["prices"]) == 1
         assert data["prices"][0]["price"] == pytest.approx(0.07)
         app_module.store.close()
+
+    def test_returns_stored_weather_in_range(self, client, tmp_path, monkeypatch):
+        """Outside temperatures are served from their own table."""
+        self._db(tmp_path, monkeypatch)
+        hour = (
+            datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
+        ).replace(minute=0, second=0, microsecond=0)
+        app_module.store.save_weather({hour.isoformat(): 4.5})
+
+        resp = client.get(
+            "/api/history",
+            query_string={
+                "from": (hour - datetime.timedelta(days=1)).isoformat(),
+                "to": (hour + datetime.timedelta(days=1)).isoformat(),
+            },
+        )
+
+        assert resp.get_json()["weather"] == [
+            {"time": hour.isoformat(), "outside_temp": 4.5}
+        ]
+        app_module.store.close()
+
+    def test_temperatures_serve_outside_history_across_a_spa_outage(
+        self, client, tmp_path, monkeypatch
+    ):
+        """The chart's outside line comes from the weather table, gaps and all.
+
+        The deque holds readings from before and after a week without any, and
+        the weather table covers that week; the chart must get all of it.
+        """
+        self._db(tmp_path, monkeypatch)
+        now = datetime.datetime.now(tz=datetime.UTC).replace(
+            minute=0, second=0, microsecond=0
+        )
+        before, after = now - datetime.timedelta(days=7), now
+        for when in (before, after):
+            app_module.temperature_history.append(
+                {
+                    "time": when.isoformat(),
+                    "current_temp": 30.0,
+                    "desired_temp": 10.0,
+                    "outside_temp": None,
+                }
+            )
+        outage = {
+            (before + datetime.timedelta(hours=h)).isoformat(): float(h)
+            for h in range(0, 7 * 24 + 1, 24)
+        }
+        app_module.store.save_weather(
+            {(before - datetime.timedelta(hours=1)).isoformat(): 99.0, **outage}
+        )
+
+        outside = client.get("/api/temperatures").get_json()["outside_history"]
+
+        assert [p["time"] for p in outside] == sorted(outage)
+        app_module.store.close()
+
+    def test_temperatures_have_no_outside_history_without_sqlite(self, client):
+        """In development without SQLite the chart falls back to the readings."""
+        assert client.get("/api/temperatures").get_json()["outside_history"] == []
 
     def test_excludes_rows_outside_the_range(self, client, tmp_path, monkeypatch):
         """Rows outside from/to are not returned."""

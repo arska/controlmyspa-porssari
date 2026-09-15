@@ -134,3 +134,35 @@ def test_closing_disables_the_store(store):
 
     assert store.enabled is False
     assert store.newest_readings(10) == []
+
+
+def test_weather_round_trips_oldest_first_within_the_range(store):
+    """Hourly outside temperatures come back inside from/to, inclusive, in order."""
+    hours = [NOW + datetime.timedelta(hours=h) for h in (-30, -2, -1, 0)]
+    store.save_weather({h.isoformat(): 10.0 + i for i, h in enumerate(hours)})
+
+    between = store.weather_between(hours[1], hours[3])
+
+    assert between == [
+        {"time": hours[1].isoformat(), "outside_temp": 11.0},
+        {"time": hours[2].isoformat(), "outside_temp": 12.0},
+        {"time": hours[3].isoformat(), "outside_temp": 13.0},
+    ]
+
+
+def test_saving_an_hour_of_weather_twice_keeps_the_newer_value(store):
+    """Re-fetched hours overwrite, so the hourly backfill never duplicates rows."""
+    store.save_weather({NOW.isoformat(): 10.0})
+    store.save_weather({NOW.isoformat(): 11.5})
+
+    assert store.weather_between(NOW, NOW) == [
+        {"time": NOW.isoformat(), "outside_temp": 11.5}
+    ]
+
+
+def test_a_disabled_store_has_no_weather():
+    """Weather follows the same no-op rule as readings and prices."""
+    disabled = storage.Store()
+    disabled.save_weather({NOW.isoformat(): 10.0})
+
+    assert disabled.weather_between(NOW, NOW) == []

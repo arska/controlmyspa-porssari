@@ -244,9 +244,13 @@
                         },
                         {
                             label: 'Outside temp',
-                            data: history
-                                .filter(p => p.outside != null)
-                                .map(p => ({x: p.time, y: p.outside})),
+                            // Stored hourly on its own, so it has no gap when the
+                            // spa had one. Without SQLite, fall back to the readings.
+                            data: (data.outside_history || []).length > 0
+                                ? data.outside_history.map(p => ({x: new Date(p.time), y: p.outside_temp}))
+                                : history
+                                    .filter(p => p.outside != null)
+                                    .map(p => ({x: p.time, y: p.outside})),
                             borderColor: '#7f8c8d',
                             tension: 0.3,
                             pointRadius: 2,
