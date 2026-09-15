@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
+import prometheus_client
 import pytest
 import requests
 
@@ -1462,6 +1463,36 @@ class TestSQLitePersistence:
         assert app_module.temperature_history[0]["current_temp"] == 30.0
         assert app_module.temperature_history[-1]["current_temp"] == 35.0
         assert app_module.temperature_history[-1]["outside_temp"] == 5.0
+        app_module.store.close()
+
+    def test_startup_seeds_gauges_from_newest_reading(self, tmp_path, monkeypatch):
+        """A restart keeps the last successful read, instead of resetting it to 0.
+
+        At 0, "no read for an hour" either fires on every restart or has to
+        ignore 0, and then an outage that spans a restart never alerts.
+        """
+        db_path = str(tmp_path / "test.db")
+        monkeypatch.setenv("SQLITE_PATH", db_path)
+        last = datetime.datetime(2026, 9, 8, 15, 1, 35, tzinfo=datetime.UTC)
+        seed = storage.Store(db_path)
+        seed.save_reading(
+            (last - datetime.timedelta(minutes=15)).isoformat(), 36.0, 10.0, 16.0
+        )
+        seed.save_reading(last.isoformat(), 36.5, 37.0, 16.2)
+        seed.close()
+        app_module.metrics.API_LAST_SUCCESS.set(0)
+        app_module.metrics.POOL_TEMPERATURE.set(0)
+        app_module.metrics.DESIRED_TEMPERATURE.set(0)
+
+        with app_module.APP.app_context():
+            app_module.init_db()
+
+        registry = prometheus_client.REGISTRY
+        assert registry.get_sample_value(
+            "spa_api_last_success_timestamp_seconds"
+        ) == pytest.approx(last.timestamp(), abs=1)
+        assert registry.get_sample_value("spa_pool_temperature_celsius") == 36.5
+        assert registry.get_sample_value("spa_desired_temperature_celsius") == 37.0
         app_module.store.close()
 
     def test_startup_backfill_is_capped_at_deque_capacity(self, tmp_path, monkeypatch):

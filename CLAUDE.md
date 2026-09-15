@@ -76,7 +76,7 @@ TELEGRAM_WEBHOOK_URL # Optional base URL for Telegram webhook registration (e.g.
 # Install dependencies
 uv sync
 
-# Run all checks (default: ruff, pylint, tests, docker)
+# Run all checks (default: ruff, pylint, tests, alerts, docker)
 uvx nox
 
 # Run specific sessions
@@ -111,6 +111,7 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 ## Monitoring and Deployment
 
 - **Alerting must live outside the process it watches.** Every alert this app sends — the stale-temperature warning, the startup healthcheck — needs the app running, so none of them fire when it dies. That is the failure mode that matters most. See `docs/plans/2026-08-22-prometheus-telegram-alerting.md`: adopt Prometheus + Alertmanager with Telegram alerting from Landingpager, and retire the in-app heuristics it replaces.
+- **Alert rules live in `deploy/prometheusrule.yaml` and are unit-tested.** `monitoring/prometheusrule_test.yaml` replays synthetic series through them with promtool (`uvx nox -s alerts`, Docker required); the deploy waits on it. Every pod restart starts a new series, so a rule over `changes()` or `absent()` needs a restart case. `init_db()` seeds `spa_api_last_success_timestamp_seconds` from the newest SQLite reading, so `SpaApiUnreachable` survives a restart.
 - **A build that succeeds proves nothing — run the image.** `nox -s docker` builds it *and* starts it, and the deploy job waits on that. An image that cannot start otherwise shows up only as a rollout timing out two minutes later.
 - **New module? Check the Dockerfile.** It copies named files, not the tree. `test_dockerfile.py` fails when an imported module is missing.
 - Treat a check you could not run (no Docker daemon, no credentials) as unverified, not as passing, and say so.
