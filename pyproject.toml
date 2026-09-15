@@ -3,7 +3,7 @@ name = "controlmyspa-porssari"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
-    "controlmyspa",
+    "controlmyspa>=4.1.0",
     "flask",
     "apscheduler",
     "python-dotenv",
