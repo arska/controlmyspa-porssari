@@ -1505,7 +1505,7 @@ class TestSQLitePersistence:
         with app_module.APP.app_context():
             app_module.init_db()
         assert app_module.store.enabled
-        app_module.store.save_reading("2026-08-20T00:00:00+00:00", 35.0, 37.0, 5.0)
+        app_module.store.save_reading("2026-08-20T00:00:00+00:00", 35.0, 37.0)
         assert len(app_module.store.newest_readings(10)) == 1
         app_module.store.close()
 
@@ -1569,9 +1569,9 @@ class TestSQLitePersistence:
         last = datetime.datetime(2026, 9, 8, 15, 1, 35, tzinfo=datetime.UTC)
         seed = storage.Store(db_path)
         seed.save_reading(
-            (last - datetime.timedelta(minutes=15)).isoformat(), 36.0, 10.0, 16.0
+            (last - datetime.timedelta(minutes=15)).isoformat(), 36.0, 10.0
         )
-        seed.save_reading(last.isoformat(), 36.5, 37.0, 16.2)
+        seed.save_reading(last.isoformat(), 36.5, 37.0)
         seed.close()
         app_module.metrics.API_LAST_SUCCESS.set(0)
         app_module.metrics.POOL_TEMPERATURE.set(0)
@@ -1640,7 +1640,11 @@ class TestSQLitePersistence:
         mock_api.current_temp = 34.5
         mock_api.desired_temp = 37
         mock_api_class.return_value = mock_api
-        app_module.latest_outside_temp = 8.0
+        # the weather job stores the hour; the reading picks it up from there
+        hour = datetime.datetime.now(tz=datetime.UTC).replace(
+            minute=0, second=0, microsecond=0
+        )
+        app_module.store.save_weather({hour.isoformat(): 8.0})
 
         with app_module.APP.app_context():
             app_module.set_temp(37)
@@ -2912,7 +2916,7 @@ class TestHistoryAPI:
         """The endpoint serves rows straight from SQLite, not the memory window."""
         self._db(tmp_path, monkeypatch)
         old = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
-        app_module.store.save_reading(old.isoformat(), 35.0, 37.0, 5.0)
+        app_module.store.save_reading(old.isoformat(), 35.0, 37.0)
         app_module.store.save_prices(
             {old.astimezone(ZoneInfo("Europe/Helsinki")).isoformat(): 0.07}
         )
@@ -2996,7 +3000,7 @@ class TestHistoryAPI:
         """Rows outside from/to are not returned."""
         self._db(tmp_path, monkeypatch)
         old = datetime.datetime.now(tz=datetime.UTC) - datetime.timedelta(days=30)
-        app_module.store.save_reading(old.isoformat(), 35.0, 37.0, 5.0)
+        app_module.store.save_reading(old.isoformat(), 35.0, 37.0)
 
         resp = client.get("/api/history")  # defaults to the last 7 days
         assert resp.get_json()["readings"] == []

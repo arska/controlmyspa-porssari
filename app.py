@@ -617,7 +617,6 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     temperature_history[-1]["time"],
                     pool["current_temp"],
                     pool["desired_temp"],
-                    latest_outside_temp,
                 )
                 metrics.API_LAST_SUCCESS.set(
                     datetime.datetime.now(tz=datetime.UTC).timestamp()
