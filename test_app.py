@@ -147,6 +147,19 @@ class TestTemperatureAPI:
         data = resp.get_json()
         assert data["outside_temp"] == 7.5
 
+    def test_forecast_times_carry_the_utc_offset(self, client):
+        """The chart parses times with new Date(), which reads a bare time as local.
+
+        Open-Meteo's forecast keys are UTC without an offset. Sent as they were,
+        a browser in Helsinki drew the forecast three hours early, while every
+        other series, sent with +00:00, sat where it belongs.
+        """
+        app_module.weather_forecast = {"2026-09-15T13:00": 14.2}
+
+        forecast = client.get("/api/temperatures").get_json()["weather_forecast"]
+
+        assert forecast == [{"time": "2026-09-15T13:00:00+00:00", "temp": 14.2}]
+
     def test_history_maxlen(self, client):
         """Temperature history is a bounded ring buffer, a week deep."""
         capacity = app_module.temperature_history.maxlen
