@@ -70,6 +70,25 @@ def test_the_image_contains_every_module_the_app_imports():
     assert not missing, f"Dockerfile does not COPY: {sorted(missing)}"
 
 
+def test_the_build_runs_nothing_but_the_dependency_install():
+    """A build step that calls an outside service fails whenever that service does.
+
+    The build used to run get_certificate.py, which logged in to
+    iot.controlmyspa.com. On 2026-09-11 the name did not resolve on the CI
+    runner, the image failed to build, and the deploy never happened. The
+    certificate workaround it existed for had already been removed from the
+    controlmyspa library.
+    """
+    run_steps = [
+        line.strip()
+        for line in (ROOT / "Dockerfile").read_text().splitlines()
+        if line.strip().startswith("RUN ")
+    ]
+
+    assert run_steps, "expected at least the dependency install"
+    assert all(step.startswith("RUN uv sync ") for step in run_steps), run_steps
+
+
 def test_the_templates_are_in_the_image():
     """The status page renders a template; without it every request 500s."""
     assert "templates" in _files_copied_into_the_image()
