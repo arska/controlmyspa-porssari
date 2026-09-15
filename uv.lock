@@ -198,14 +198,14 @@ wheels = [
 
 [[package]]
 name = "controlmyspa"
-version = "4.0.4"
+version = "4.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "requests" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/38/f1/e76d413bd7e7609a87498c2d908716a3e2e0a55e75824ba40972a80165e8/controlmyspa-4.0.4.tar.gz", hash = "sha256:d229ed511f40acdb394029431065c1ae7e3876a9f935c0141c4d2cdc881dc8e9", size = 17559, upload-time = "2026-07-22T20:20:58.349Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d6/f0/11694fdd3e1277dba05d39a470d37ed5b2eed936ca5948b1ddccdcc16db4/controlmyspa-4.1.0.tar.gz", hash = "sha256:478b2fc92ecffaa37057206dea385dd1b99344273b988c46c3ec0d4ef75256b4", size = 18770, upload-time = "2026-09-15T10:20:16.945Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d9/0b/d9fd2afb0a4cd6bc8f3a80b8b4080e1a549ec1ff52065e3a0baade88399b/controlmyspa-4.0.4-py3-none-any.whl", hash = "sha256:389960d883c52fe3efbbf0245d0687c4b53c70d65ffbb533309ca3abd73d0eca", size = 8382, upload-time = "2026-07-22T20:20:57.166Z" },
+    { url = "https://files.pythonhosted.org/packages/31/c3/0eda224da1894412c8b969e46812afb71e7e66c55d0b21e04da5be58d3a1/controlmyspa-4.1.0-py3-none-any.whl", hash = "sha256:ae409a2ec82db15af6c15df516d9a755c548768adafdde24ef3cae8ad14378c9", size = 8898, upload-time = "2026-09-15T10:20:15.707Z" },
 ]
 
 [[package]]
@@ -236,7 +236,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "apscheduler" },
-    { name = "controlmyspa" },
+    { name = "controlmyspa", specifier = ">=4.1.0" },
     { name = "flask" },
     { name = "flask-caching" },
     { name = "prometheus-client", specifier = ">=0.26.0" },
