@@ -536,6 +536,44 @@ class TestSetTemp:
         assert len(app_module.temperature_history) == 0
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.sentry_sdk.capture_exception")
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_exhausted_retries_report_the_underlying_error(
+        self, mock_api_class, mock_capture, caplog
+    ):
+        """The cause of a failed read reaches Sentry and the log, not just RetryError.
+
+        In 2026-09 Balboa removed GET /spas. Every read failed with a 404 for a
+        week, and all anyone could see was an info line naming RetryError.
+        """
+        response = MagicMock(status_code=404)
+        not_found = requests.exceptions.HTTPError(
+            "404 Client Error: Not Found for url: https://iot.controlmyspa.com/spas",
+            response=response,
+        )
+        mock_api_class.side_effect = not_found
+        real_monotonic = time.monotonic
+        fake_offset = [0.0]
+
+        def advancing_monotonic():
+            return real_monotonic() + fake_offset[0]
+
+        def advancing_sleep(seconds):
+            fake_offset[0] += seconds
+
+        with (
+            patch("time.monotonic", side_effect=advancing_monotonic),
+            patch("tenacity.nap.time.sleep", side_effect=advancing_sleep),
+            app_module.APP.app_context(),
+            caplog.at_level("WARNING"),
+        ):
+            app_module.set_temp(37)
+
+        mock_capture.assert_called_once_with(not_found)
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any("Not Found for url" in r.getMessage() for r in warnings)
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
     def test_active_override_skips_temp_change(self, mock_api_class):
         """set_temp returns early when manual override endtime is in future."""

@@ -687,9 +687,13 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                 check_stale_temperature()
     except tenacity.RetryError as exception:
         metrics.API_FAILURES.inc()
-        APP.logger.info(
-            "ignoring controlmyspa API error, retrying next control loop: %s",
-            exception,
+        # RetryError only says that retries ran out. The cause is on the last
+        # attempt, and without it a changed API looks like a flaky one.
+        cause = exception.last_attempt.exception()
+        sentry_sdk.capture_exception(cause)
+        APP.logger.warning(
+            "controlmyspa API failed after retries, trying again next control loop: %r",
+            cause,
         )
 
 
