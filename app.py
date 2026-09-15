@@ -931,8 +931,16 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
             "temp_low": temp_low,
             "temp_min": temp_min,
             "outside_temp": latest_outside_temp,
+            # Open-Meteo's keys are UTC without an offset; the browser would
+            # read them as local time, so they go out with one like the rest.
             "weather_forecast": [
-                {"time": t, "temp": v} for t, v in sorted(weather_forecast.items())
+                {
+                    "time": datetime.datetime.fromisoformat(t)
+                    .replace(tzinfo=datetime.UTC)
+                    .isoformat(),
+                    "temp": v,
+                }
+                for t, v in sorted(weather_forecast.items())
             ],
             "cooling_k": cooling_k,
             "heating_rate": _heating_rate(),
