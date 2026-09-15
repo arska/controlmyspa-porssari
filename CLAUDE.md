@@ -15,7 +15,7 @@ Flask app in `app.py`, with the pure logic split out:
 - `storage.py` — the SQLite tables. A `Store` owns its connection and lock; a store with no path is disabled and every method is a no-op, which is how local dev runs without `/data`. Nothing outside this module touches SQLite
 - `app.py` — state, routes, the Telegram bot and the spa device I/O. It owns every mutable global and calls the modules above
 
-Temperature and price history are persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
+Temperature, price and outside-temperature history are persisted to SQLite (optional, enabled when `SQLITE_PATH` directory exists). Other state is in-memory:
 - `hourly_prices` — dict of ISO datetime → price (EUR/kWh) fetched from spot-hinta.fi. Fetched prices are merged over remembered ones and pruned to the last `PRICE_MEMORY_HOURS` (168h / 7 days) so past hours stay on the chart; the `price_history` SQLite table keeps every price forever (source of truth, backfilled into memory on startup) for retroactive evaluation of the scheduling algorithm
 - `heating_schedule` — set of ISO datetime keys for hours to heat (determined by cooling model)
 - `cooling_k` — estimated cooling constant (Newton's law), updated from temperature history
@@ -29,14 +29,14 @@ Background jobs via APScheduler:
 - `update_prices()` (every 15 min) — fetches spot prices from spot-hinta.fi, aggregates to PRICE_INTERVAL-minute slots and persists them. It does *not* plan: a price outage must not freeze the thermal estimates or stop re-planning
 - `calculate_schedule()` (every 15 min, first run 60s after startup so a reading exists) — estimates cooling/heating rates, predicts when the pool hits TEMP_MIN, picks the cheapest hours before that deadline (capped by HEATING_HOURS per 14:00-14:00 window). Books nothing before the first reading, nothing while within TEMP_DEADBAND of TEMP_HIGH, and nothing while TEMP_MIN is further away than the last known price hour — spot-hinta publishes tomorrow at ~14:00, so waiting is how the cheap hours get seen at all. Blocks are sized from the pool temperature predicted *at the hour they start*, not the current one. Already-booked hours survive a deferral so a block that is about to start is never cancelled.
 - `control()` (every 15 min) — sets spa temperature via ControlMySpa API based on current hour's `heating_schedule` membership
-- `update_weather()` (hourly) — fetches outside air temperature from Open-Meteo for the configured location (default 20900 Turku). Used by the cooling model to predict heat loss rate.
+- `update_weather()` (hourly) — fetches outside air temperature from Open-Meteo for the configured location (default 20900 Turku). Used by the cooling model to predict heat loss rate. Each fetch also re-saves the past `WEATHER_PAST_HOURS` (14 days) into the `weather_readings` table, independent of any spa reading, so a gap shorter than that fills itself on the next success. It must be `past_hours`: Open-Meteo ignores `past_days` once `forecast_hours` is set. `weather_forecast` keeps only the current hour onward.
 
 ## Routes
 
 - `GET /` — Web GUI with temp graph, pool status, override toggle, schedule grid
-- `GET /api/temperatures` — JSON: temperature history (incl. `outside_temp` per entry), latest `outside_temp`, the measured `cooling_k` and `heating_rate`, + future price schedule with `heating` flag
+- `GET /api/temperatures` — JSON: temperature history (incl. `outside_temp` per entry), `outside_history` from the weather table over the same window (the chart's outside line; empty without SQLite), latest `outside_temp`, the measured `cooling_k` and `heating_rate`, + future price schedule with `heating` flag
 - `POST /api/override` — JSON body `{"action": "enable"|"disable"}` to toggle manual override
-- `GET /api/history?from=&to=&limit=` — JSON: readings and prices read straight from SQLite (not the memory window), for retroactive evaluation. 503 when SQLite is disabled
+- `GET /api/history?from=&to=&limit=` — JSON: readings, prices and hourly weather read straight from SQLite (not the memory window), for retroactive evaluation. 503 when SQLite is disabled
 - `POST /telegram/<token>` — Telegram bot webhook (commands: /status, /override, /heat, /schedule)
 
 ## Environment Variables

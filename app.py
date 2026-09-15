@@ -41,6 +41,10 @@ scheduler = BackgroundScheduler()
 OPEN_METEO_API = "https://api.open-meteo.com/v1/forecast"
 DEFAULT_WEATHER_LAT = "60.45"
 DEFAULT_WEATHER_LON = "22.27"
+# Every weather fetch re-saves this much history, so any gap shorter than it
+# (the app down, Open-Meteo down) fills itself on the next success. It has to
+# be past_hours: Open-Meteo ignores past_days once forecast_hours is set.
+WEATHER_PAST_HOURS = 14 * 24
 # A weather fetch may fail on the network (RequestException) or while parsing
 # the JSON (KeyError for a missing field, ValueError for bad/no JSON). Kept as a
 # named tuple because ruff 0.15.21's formatter mangles inline `except (...)`.
@@ -302,6 +306,30 @@ def initialize() -> None:
             APP.logger.exception("failed to register telegram webhook")
 
 
+def _split_hourly_weather(
+    times: list[str], temps: list[float | None], now: datetime.datetime
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Split Open-Meteo's hourly series into hours to store and the forecast.
+
+    Open-Meteo returns naive UTC times. Stored hours are keyed as UTC ISO
+    strings with an offset, like readings, and include every hour that has
+    started. The forecast keeps Open-Meteo's own keys, which the cooling model
+    looks up, from the current hour on. Hours without a value are dropped.
+    """
+    this_hour = now.replace(minute=0, second=0, microsecond=0)
+    past: dict[str, float] = {}
+    forecast: dict[str, float] = {}
+    for time_key, temp in zip(times, temps, strict=False):
+        if temp is None:
+            continue
+        hour = datetime.datetime.fromisoformat(time_key).replace(tzinfo=datetime.UTC)
+        if hour <= now:
+            past[hour.isoformat()] = temp
+        if hour >= this_hour:
+            forecast[time_key] = temp
+    return past, forecast
+
+
 def update_weather() -> None:
     """Fetch current outside temperature and hourly forecast.
 
@@ -324,20 +352,24 @@ def update_weather() -> None:
                     "current": "temperature_2m",
                     "hourly": "temperature_2m",
                     "forecast_hours": 48,
+                    "past_hours": WEATHER_PAST_HOURS,
                 },
                 timeout=10,
             )
             response.raise_for_status()
             data = response.json()
             latest_outside_temp = data["current"]["temperature_2m"]
-            # Build hourly forecast dict
             hourly = data.get("hourly", {})
-            times = hourly.get("time", [])
-            temps = hourly.get("temperature_2m", [])
-            weather_forecast = dict(zip(times, temps, strict=False))
+            past, weather_forecast = _split_hourly_weather(
+                hourly.get("time", []),
+                hourly.get("temperature_2m", []),
+                datetime.datetime.now(tz=datetime.UTC),
+            )
+            store.save_weather(past)
             APP.logger.info(
-                "got outside temperature: %s°C, %d forecast hours",
+                "got outside temperature: %s°C, %d past and %d forecast hours",
                 latest_outside_temp,
+                len(past),
                 len(weather_forecast),
             )
         except WEATHER_FETCH_ERRORS:
@@ -877,9 +909,19 @@ def api_temperatures() -> flask.Response:  # pylint: disable=too-many-locals
         for k, v in sorted(hourly_prices.items())
     ]
 
+    # The outside line spans the same window as the readings, but from its own
+    # table: a reading is missing whenever the spa was, the weather is not.
+    now = datetime.datetime.now(tz=datetime.UTC)
+    outside_since = (
+        datetime.datetime.fromisoformat(temperature_history[0]["time"])
+        if temperature_history
+        else now - datetime.timedelta(hours=PRICE_MEMORY_HOURS)
+    )
+
     return flask.jsonify(
         {
             "history": list(temperature_history),
+            "outside_history": store.weather_between(outside_since, now),
             "future": future,
             "prices": all_prices,
             "temp_high": temp_high,
@@ -932,6 +974,7 @@ def api_history() -> flask.Response:
             "to": end.isoformat(),
             "readings": store.readings_between(start, end, limit),
             "prices": store.prices_between(start, end),
+            "weather": store.weather_between(start, end),
         }
     )
 

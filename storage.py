@@ -1,4 +1,4 @@
-"""Persistence: the SQLite tables holding temperature readings and prices.
+"""Persistence: the SQLite tables holding temperature readings, prices and weather.
 
 A Store owns its connection and its lock, so nothing outside this module
 touches SQLite. Persistence is optional — a Store with no path is disabled and
@@ -31,6 +31,13 @@ SCHEMA = (
         "CREATE TABLE IF NOT EXISTS price_history ("
         "time TEXT PRIMARY KEY, "
         "price REAL NOT NULL)"
+    ),
+    # Its own table, not a column on readings: a reading only exists when the
+    # spa answers, and the outside temperature must not vanish when it doesn't.
+    (
+        "CREATE TABLE IF NOT EXISTS weather_readings ("
+        "time TEXT PRIMARY KEY, "
+        "outside_temp REAL NOT NULL)"
     ),
 )
 
@@ -106,6 +113,35 @@ class Store:
                     (time_key, price),
                 )
             self._conn.commit()
+
+    def save_weather(self, temps: dict[str, float]) -> None:
+        """Record hourly outside temperatures, replacing hours already stored."""
+        if self._conn is None:
+            return
+        with self._lock:
+            self._conn.executemany(
+                "INSERT OR REPLACE INTO weather_readings (time, outside_temp) "
+                "VALUES (?, ?)",
+                temps.items(),
+            )
+            self._conn.commit()
+
+    def weather_between(
+        self, start: datetime.datetime, end: datetime.datetime
+    ) -> list[dict]:
+        """Return the outside temperatures in a time range, oldest first.
+
+        Keys are UTC ISO strings, so they compare lexically like readings do.
+        """
+        if self._conn is None:
+            return []
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT time, outside_temp FROM weather_readings "
+                "WHERE time >= ? AND time <= ? ORDER BY time",
+                (start.isoformat(), end.isoformat()),
+            ).fetchall()
+        return [{"time": t, "outside_temp": v} for t, v in rows]
 
     def newest_readings(self, limit: int) -> list[dict]:
         """Return the `limit` most recent readings, oldest first."""
