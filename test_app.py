@@ -2022,7 +2022,7 @@ class TestCalculateSchedule:
         app_module.hourly_prices = prices
         app_module.calculate_schedule()
         # Should include the cheapest hour (hour 5)
-        cheapest_key = sorted(prices, key=prices.get)[0]
+        cheapest_key = min(prices, key=prices.get)
         assert cheapest_key in app_module.heating_schedule
         # hours_needed = ceil((37-35)/2.5) = 1 (based on current temp, not TEMP_MIN)
         assert len(app_module.heating_schedule) == 1
