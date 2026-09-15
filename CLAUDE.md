@@ -126,6 +126,8 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 
 Alerts about the spa live in Prometheus, not in the app: `deploy/prometheusrule.yaml` (pod health, `SpaApiUnreachable`, `SpaReadingFrozen`, `SpaTooCold`, `SpaPricesStale`, ...) evaluated against the gauges in `metrics.py`, delivered to Telegram by `deploy/alertmanagerconfig.yaml`, unit-tested with promtool in `monitoring/prometheusrule_test.yaml`. The in-app `check_stale_temperature()` heuristic was removed on 2026-09-15: it ran on the success path of `set_temp()`, so the week in which every read failed never reached it.
 
+Balboa is down for under an hour several times a month, so neither channel reports that. `SpaApiUnreachable` waits six hours, and `set_temp()` sends an exhausted retry to Sentry only when the cause will not fix itself (a 4xx, a response of the wrong shape). Timeouts, connection errors, 5xx and `SpaOfflineError` go to the log and `spa_api_failures_total` only.
+
 ## Manual Override Logic
 
 When the spa's desired temp doesn't match TEMP_HIGH or TEMP_LOW, the system assumes manual control via physical spa controls and pauses automatic control for 12 hours. The web GUI also allows enabling/disabling override via `/api/override`.

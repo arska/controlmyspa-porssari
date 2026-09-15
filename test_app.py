@@ -36,6 +36,25 @@ def _reset_state():
 
 
 @pytest.fixture
+def fast_retries():
+    """Let tenacity's 10 minutes of retries pass without sleeping."""
+    real_monotonic = time.monotonic
+    fake_offset = [0.0]
+
+    def advancing_monotonic():
+        return real_monotonic() + fake_offset[0]
+
+    def advancing_sleep(seconds):
+        fake_offset[0] += seconds
+
+    with (
+        patch("time.monotonic", side_effect=advancing_monotonic),
+        patch("tenacity.nap.time.sleep", side_effect=advancing_sleep),
+    ):
+        yield
+
+
+@pytest.fixture
 def client():
     """Flask test client."""
     app_module.APP.config["TESTING"] = True
@@ -568,6 +587,72 @@ class TestSetTemp:
         mock_capture.assert_called_once_with(not_found)
         warnings = [r for r in caplog.records if r.levelname == "WARNING"]
         assert any("Not Found for url" in r.getMessage() for r in warnings)
+
+    @pytest.mark.usefixtures("fast_retries")
+    @pytest.mark.parametrize(
+        "cause",
+        [
+            requests.exceptions.ReadTimeout("Read timed out. (read timeout=10)"),
+            requests.exceptions.ConnectionError("Connection reset by peer"),
+            requests.exceptions.HTTPError(
+                "502 Server Error: Bad Gateway",
+                response=MagicMock(status_code=502),
+            ),
+            app_module.SpaOfflineError("the spa gateway may be offline"),
+        ],
+        ids=["timeout", "connection", "5xx", "gateway-offline"],
+    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.sentry_sdk.capture_exception")
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_transient_outage_is_not_reported_to_sentry(
+        self, mock_api_class, mock_capture, cause, caplog
+    ):
+        """Balboa goes away for under an hour several times a month.
+
+        Reporting each of those opened a Sentry issue (CONTROLMYSPA-PORSSARI-4A,
+        -4B) for an outage that fixed itself. An outage that lasts is
+        SpaApiUnreachable's job; the cause still reaches the log and the counter.
+        """
+        mock_api_class.side_effect = cause
+        failures = prometheus_client.REGISTRY.get_sample_value("spa_api_failures_total")
+
+        with app_module.APP.app_context(), caplog.at_level("WARNING"):
+            app_module.set_temp(37)
+
+        mock_capture.assert_not_called()
+        assert (
+            prometheus_client.REGISTRY.get_sample_value("spa_api_failures_total")
+            == failures + 1
+        )
+        warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+        assert any(str(cause) in r.getMessage() for r in warnings)
+
+    @pytest.mark.usefixtures("fast_retries")
+    @pytest.mark.parametrize(
+        "cause",
+        [
+            requests.exceptions.HTTPError(
+                "401 Client Error: Unauthorized",
+                response=MagicMock(status_code=401),
+            ),
+            KeyError("currentState"),
+        ],
+        ids=["4xx", "changed-response"],
+    )
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.sentry_sdk.capture_exception")
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_failure_that_will_not_fix_itself_is_reported(
+        self, mock_api_class, mock_capture, cause
+    ):
+        """Rejected credentials or a changed API stay broken until someone acts."""
+        mock_api_class.side_effect = cause
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        mock_capture.assert_called_once_with(cause)
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
