@@ -15,7 +15,7 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["ruff==0.15.22", "nox", "pylint", "pytest", "pytest-cov"]
+dev = ["ruff==0.16.7", "nox", "pylint", "pytest", "pytest-cov"]
 
 [tool.ruff]
 # Exclude a variety of commonly ignored directories.
@@ -57,7 +57,13 @@ target-version = "py314"
 
 [tool.ruff.lint]
 select = ["ALL"]
-ignore = ["D203", "D213", "COM812", "ISC001"]
+ignore = [
+    "D203",
+    "D213",
+    "COM812",
+    "ISC001",
+    "CPY001", # no license in this repo, so a per-file copyright header adds nothing
+]
 
 # Allow fix for all enabled rules (when `--fix`) is provided.
 fixable = ["ALL"]
@@ -86,6 +92,9 @@ max-module-lines = 1400
 disable = ["pointless-string-statement", "global-statement"]
 
 [tool.ruff.format]
+# ruff 0.16 formats Python blocks inside Markdown. The plans in docs/ are records
+# whose snippets are indented to show where they sit in a file; leave them be.
+exclude = ["*.md"]
 # Like Black, use double quotes for strings.
 quote-style = "double"
 

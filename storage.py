@@ -18,16 +18,20 @@ import threading
 logger = logging.getLogger(__name__)
 
 SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS temperature_readings ("
-    "id INTEGER PRIMARY KEY AUTOINCREMENT, "
-    "time TEXT NOT NULL, "
-    "current_temp REAL NOT NULL, "
-    "desired_temp REAL NOT NULL, "
-    "outside_temp REAL)",
+    (
+        "CREATE TABLE IF NOT EXISTS temperature_readings ("
+        "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+        "time TEXT NOT NULL, "
+        "current_temp REAL NOT NULL, "
+        "desired_temp REAL NOT NULL, "
+        "outside_temp REAL)"
+    ),
     "CREATE INDEX IF NOT EXISTS idx_readings_time ON temperature_readings(time)",
-    "CREATE TABLE IF NOT EXISTS price_history ("
-    "time TEXT PRIMARY KEY, "
-    "price REAL NOT NULL)",
+    (
+        "CREATE TABLE IF NOT EXISTS price_history ("
+        "time TEXT PRIMARY KEY, "
+        "price REAL NOT NULL)"
+    ),
 )
 
 
