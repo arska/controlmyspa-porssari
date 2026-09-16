@@ -166,3 +166,66 @@ tests:
               severity: warning
             exp_annotations:
               summary: "Fewer than 4 future hours have a known price, spot-hinta may be failing"
+
+  # The 2026-09-16 false positive: the alert arrived less than two hours after
+  # the pod was recreated, claiming the override had been on for 24 hours.
+  # min_over_time is happy with a window it barely covers.
+  - name: a freshly started pod does not page as a day-old override
+    interval: 5m
+    input_series:
+      - series: 'spa_manual_override_seconds_remaining{pod="a"}'
+        values: "43200-300x24"
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: SpaOverrideLeftOn
+        exp_alerts: []
+
+  # /heat books 24 hours on purpose. A 24h window goes positive at the very
+  # moment that override expires, which is both wrong and useless.
+  - name: a deliberate 24h heat does not page
+    interval: 5m
+    input_series:
+      - series: 'spa_manual_override_seconds_remaining{pod="a"}'
+        values: "0x12 86400-300x287 0x12"
+    alert_rule_test:
+      - eval_time: 24h
+        alertname: SpaOverrideLeftOn
+        exp_alerts: []
+      - eval_time: 25h
+        alertname: SpaOverrideLeftOn
+        exp_alerts: []
+      - eval_time: 26h
+        alertname: SpaOverrideLeftOn
+        exp_alerts: []
+
+  # What the alert is for: an override renewed past the longest one the app
+  # hands out, so the spa stopped following prices for over a day.
+  - name: an override held past a day pages, once the window is covered
+    interval: 5m
+    input_series:
+      - series: 'spa_manual_override_seconds_remaining{pod="a"}'
+        values: "0x12 43200x312"
+    alert_rule_test:
+      - eval_time: 25h30m
+        alertname: SpaOverrideLeftOn
+        exp_alerts: []
+      - eval_time: 26h30m
+        alertname: SpaOverrideLeftOn
+        exp_alerts:
+          - exp_labels:
+              pod: a
+              severity: info
+            exp_annotations:
+              summary: "Manual override has been continuously active for more than a day"
+
+  # A scrape outage leaves only positive samples in the window too. Coverage,
+  # not just the minimum, is what separates it from a real day-long override.
+  - name: a two-hour scrape gap does not page
+    interval: 5m
+    input_series:
+      - series: 'spa_manual_override_seconds_remaining{pod="a"}'
+        values: "43200x150 _x24 43200x180"
+    alert_rule_test:
+      - eval_time: 29h
+        alertname: SpaOverrideLeftOn
+        exp_alerts: []
