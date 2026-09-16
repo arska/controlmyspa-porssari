@@ -120,12 +120,25 @@ spec:
           annotations:
             summary: "Pool is at {{ $value }} C, below TEMP_MIN, and has not recovered in an hour"
 
+        # min_over_time says nothing about how much data its window holds, so
+        # the bare min_over_time(...[24h]) > 0 fired minutes after a pod was
+        # recreated: a new pod label starts a new series, every sample of a
+        # two-hour-old series is positive, and the alert claimed 24 hours.
+        # Same reasoning as SpaReadingFrozen -- count the steps the window
+        # actually covers and require nearly all of them.
+        #
+        # 25h rather than 24h because /heat books a deliberate 24-hour
+        # override, and a 24h window goes positive at the exact moment that
+        # legitimate override expires. 289 of the 300 five-minute steps
+        # tolerates an hour of scrape gaps.
         - alert: SpaOverrideLeftOn
-          expr: min_over_time(spa_manual_override_seconds_remaining[24h]) > 0
+          expr: >
+            min_over_time(spa_manual_override_seconds_remaining[25h:5m]) > 0
+            and count_over_time(spa_manual_override_seconds_remaining[25h:5m]) > 289
           labels:
             severity: info
           annotations:
-            summary: "Manual override has been continuously active for 24 hours"
+            summary: "Manual override has been continuously active for more than a day"
 
         # 3h because the horizon is legitimately short just before the 14:00
         # publication of tomorrow's prices.

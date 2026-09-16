@@ -82,8 +82,12 @@ weather_forecast: dict[str, float] = {}
 
 store = storage.Store()  # disabled until init_db() opens SQLITE_PATH
 
+_EPOCH = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
-manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+manual_override_endtime = _EPOCH
+# True while the running override came from the spa's own controls, which is
+# what decides how it ends: see _override_pauses_control().
+manual_override_from_device = False  # pylint: disable=invalid-name
 
 SCHEDULE_START_DELAY = 60  # seconds; long enough for the first reading to land
 FORECAST_HOURS = 48  # how far the chart's predicted temperature runs
@@ -575,55 +579,10 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
                     pool["current_temp"],
                     pool["desired_temp"],
                 )
-                if (
-                    not skip_override_detection
-                    and int(pool["desired_temp"]) != int(os.getenv("TEMP_HIGH", "0"))
-                    and int(pool["desired_temp"]) != int(os.getenv("TEMP_LOW", "0"))
+                if not skip_override_detection and _override_pauses_control(
+                    pool["desired_temp"]
                 ):
-                    # somebody set a manual temperature through the pool controls
-                    # let's disable automatic control for 12h
-                    global manual_override_endtime  # noqa: PLW0603
-                    if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
-                        # the end time is in the future -> let's wait
-                        APP.logger.info(
-                            "not changing the temperature until %s"
-                            " due to manual override",
-                            manual_override_endtime,
-                        )
-                        return
-
-                    if manual_override_endtime == datetime.datetime.fromtimestamp(
-                        0, tz=datetime.UTC
-                    ):
-                        # end time not set -> this is the first detection
-                        # of the manual override -> set the timer
-                        manual_override_endtime = datetime.datetime.now(
-                            tz=datetime.UTC
-                        ) + datetime.timedelta(hours=12)
-                        APP.logger.info(
-                            "manual override detected, not changing"
-                            " the temperature until %s",
-                            manual_override_endtime,
-                        )
-                        tz = ZoneInfo("Europe/Helsinki")
-                        until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
-                        send_telegram(
-                            f"\U0001f6c1 Manual override detected"
-                            f" (spa set to {pool['desired_temp']}\u00b0C)."
-                            f" Pausing automatic control until {until}."
-                        )
-                        return
-
-                    # the manual override time expired
-                    # reset the timer for the next override
-                    manual_override_endtime = datetime.datetime.fromtimestamp(
-                        0, tz=datetime.UTC
-                    )
-                    send_telegram(
-                        "\u2705 Manual override expired."
-                        " Resuming automatic temperature control."
-                    )
-                    # take control over the temperature below
+                    return
 
                 if pool["desired_temp"] != float(temp):
                     api.desired_temp = float(temp)
@@ -645,12 +604,91 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
         )
 
 
+def _clear_override() -> None:
+    """Forget any override, so the next one is detected as a first one."""
+    global manual_override_endtime, manual_override_from_device  # noqa: PLW0603
+    manual_override_endtime = _EPOCH
+    manual_override_from_device = False
+
+
+def _override_pauses_control(desired_temp: float) -> bool:
+    """Whether automatic control is paused, advancing the override state.
+
+    True means the caller must leave the spa alone. The end time is the single
+    answer to "is control paused": the GUI banner, /status and
+    spa_manual_override_seconds_remaining all read it, so it may not outlive
+    the pause it describes.
+
+    An override the spa's own controls started ends the moment the spa is back
+    on an automatic setpoint, whoever put it there -- that is the gesture for
+    "I am done", and holding the timer for the remaining hours would report a
+    pause that is not happening. An override asked for through the web GUI or
+    Telegram runs to its end time instead, because the temperature it asks for
+    can be one this detection reads as automatic: /cold aims at TEMP_LOW + 0.5,
+    and int() truncates that straight back to TEMP_LOW.
+    """
+    global manual_override_endtime, manual_override_from_device  # noqa: PLW0603
+
+    now = datetime.datetime.now(tz=datetime.UTC)
+    automatic = (int(os.getenv("TEMP_HIGH", "0")), int(os.getenv("TEMP_LOW", "0")))
+    set_by_hand = int(desired_temp) not in automatic
+
+    if manual_override_endtime > now:
+        if set_by_hand or not manual_override_from_device:
+            APP.logger.info(
+                "not changing the temperature until %s due to manual override",
+                manual_override_endtime,
+            )
+            return True
+        _clear_override()
+        APP.logger.info("manual override ended: the spa is back on a setpoint")
+        send_telegram(
+            "\u2705 Manual override ended (spa back on an automatic setpoint)."
+            " Resuming automatic temperature control."
+        )
+        return False
+
+    if not set_by_hand:
+        # Nothing to detect. An end time left over from an override that ran
+        # out while the spa sat on a setpoint is cleared here, so the next
+        # dial turn is a first detection rather than an expiry.
+        _clear_override()
+        return False
+
+    if manual_override_endtime == _EPOCH:
+        # somebody set a manual temperature through the pool controls
+        # let's disable automatic control for 12h
+        manual_override_endtime = now + datetime.timedelta(hours=12)
+        manual_override_from_device = True
+        APP.logger.info(
+            "manual override detected, not changing the temperature until %s",
+            manual_override_endtime,
+        )
+        tz = ZoneInfo("Europe/Helsinki")
+        until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
+        send_telegram(
+            f"\U0001f6c1 Manual override detected"
+            f" (spa set to {desired_temp}\u00b0C)."
+            f" Pausing automatic control until {until}."
+        )
+        return True
+
+    # the manual override time expired -> reset the timer for the next one
+    # and take control over the temperature
+    _clear_override()
+    send_telegram(
+        "\u2705 Manual override expired. Resuming automatic temperature control."
+    )
+    return False
+
+
 def _start_override(temp: float, hours: int) -> None:
     """Take manual control at `temp` for `hours`, pausing automatic control."""
-    global manual_override_endtime  # noqa: PLW0603
+    global manual_override_endtime, manual_override_from_device  # noqa: PLW0603
     manual_override_endtime = datetime.datetime.now(
         tz=datetime.UTC
     ) + datetime.timedelta(hours=hours)
+    manual_override_from_device = False
     set_temp(temp, skip_override_detection=True)
 
 
@@ -734,13 +772,14 @@ def status() -> str:
 @require_auth
 def api_override() -> flask.Response:
     """Toggle manual override on/off via the web GUI."""
-    global manual_override_endtime  # noqa: PLW0603
+    global manual_override_endtime, manual_override_from_device  # noqa: PLW0603
     body = flask.request.get_json(silent=True) or {}
     action = body.get("action")
     if action == "enable":
         manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=12)
+        manual_override_from_device = False
         APP.logger.info(
             "manual override enabled via web GUI until %s",
             manual_override_endtime,
@@ -749,7 +788,7 @@ def api_override() -> flask.Response:
         until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
         send_telegram(f"\u23f8 Manual override enabled via web for 12h (until {until})")
     elif action == "disable":
-        manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+        _clear_override()
         APP.logger.info("manual override disabled via web GUI")
         send_telegram(
             "\u2705 Manual override disabled via web."
@@ -959,33 +998,56 @@ def _within_memory(key: str, now: datetime.datetime) -> bool:
 def _refresh_gauges() -> None:
     """Fill the derived gauges from current state, at scrape time.
 
-    Guarded so a bad derived value (for example an unparsable price key)
-    cannot turn the whole /metrics response into a 500: Prometheus would read
-    that as the target being down and lose every metric family, not just the
-    one that failed.
+    Each gauge is filled on its own. One bad derived value (an unparsable
+    price key, say) must not turn the whole /metrics response into a 500 --
+    Prometheus would read that as the target being down and lose every metric
+    family -- and it must not leave the gauges after it frozen at their last
+    value either. A frozen gauge is the worse of the two: a missing one is
+    visibly missing, while a stale one reads as live. That is how a positive
+    spa_manual_override_seconds_remaining would keep SpaOverrideLeftOn firing
+    long after the override ended.
+
+    A source returning None leaves its gauge alone, which is how an outside
+    temperature that has never been fetched stays unset.
     """
-    try:
-        now = datetime.datetime.now(tz=datetime.UTC)
-        metrics.COOLING_K.set(cooling_k)
-        metrics.HEATING_RATE.set(_heating_rate())
-        metrics.PRICE_HOURS_KNOWN.set(
-            sum(1 for key in hourly_prices if _within_memory(key, now))
-        )
-        remaining = (manual_override_endtime - now).total_seconds()
-        metrics.OVERRIDE_REMAINING.set(max(remaining, 0))
-        current_hour = now.astimezone(ZoneInfo("Europe/Helsinki")).replace(
-            minute=0, second=0, microsecond=0
-        )
-        metrics.HEATING_SCHEDULED.set(
-            1 if current_hour.isoformat() in heating_schedule else 0
-        )
-        if latest_outside_temp is not None:
-            metrics.OUTSIDE_TEMPERATURE.set(latest_outside_temp)
-    except Exception:  # pylint: disable=broad-exception-caught
-        # Deliberately broad: an unparsable price key or any other derived-
-        # gauge failure must not turn /metrics into a 500, which Prometheus
-        # would read as the target being down and lose every metric family.
-        APP.logger.exception("failed to refresh derived metrics")
+    now = datetime.datetime.now(tz=datetime.UTC)
+    current_hour = now.astimezone(ZoneInfo("Europe/Helsinki")).replace(
+        minute=0, second=0, microsecond=0
+    )
+    sources = (
+        ("cooling_k", metrics.COOLING_K, lambda: cooling_k),
+        ("heating_rate", metrics.HEATING_RATE, _heating_rate),
+        (
+            "price_hours_known",
+            metrics.PRICE_HOURS_KNOWN,
+            lambda: sum(1 for key in hourly_prices if _within_memory(key, now)),
+        ),
+        (
+            "override_remaining",
+            metrics.OVERRIDE_REMAINING,
+            lambda: max((manual_override_endtime - now).total_seconds(), 0),
+        ),
+        (
+            "heating_scheduled",
+            metrics.HEATING_SCHEDULED,
+            lambda: int(current_hour.isoformat() in heating_schedule),
+        ),
+        (
+            "outside_temperature",
+            metrics.OUTSIDE_TEMPERATURE,
+            lambda: latest_outside_temp,
+        ),
+    )
+    for name, gauge, source in sources:
+        try:
+            value = source()
+        except Exception:  # pylint: disable=broad-exception-caught
+            # Deliberately broad: see the docstring. Whatever one derived
+            # value does, the others are still current.
+            APP.logger.exception("failed to refresh the %s gauge", name)
+            continue
+        if value is not None:
+            gauge.set(value)
 
 
 @APP.route("/metrics")
@@ -1076,9 +1138,9 @@ def _handle_telegram_status(chat_id: str) -> None:
 
 def _handle_telegram_override(chat_id: str) -> None:  # noqa: ARG001  # pylint: disable=unused-argument
     """Handle /override command -- toggle on/off."""
-    global manual_override_endtime  # noqa: PLW0603
+    global manual_override_endtime, manual_override_from_device  # noqa: PLW0603
     if manual_override_endtime > datetime.datetime.now(tz=datetime.UTC):
-        manual_override_endtime = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
+        _clear_override()
         # skip override detection since API may still return stale desired_temp
         control(skip_override_detection=True)
         send_telegram(
@@ -1089,6 +1151,7 @@ def _handle_telegram_override(chat_id: str) -> None:  # noqa: ARG001  # pylint: 
         manual_override_endtime = datetime.datetime.now(
             tz=datetime.UTC
         ) + datetime.timedelta(hours=12)
+        manual_override_from_device = False
         tz = ZoneInfo("Europe/Helsinki")
         until = manual_override_endtime.astimezone(tz).strftime("%H:%M")
         send_telegram(
