@@ -24,6 +24,7 @@ def _reset_state():
     app_module.manual_override_endtime = datetime.datetime.fromtimestamp(
         0, tz=datetime.UTC
     )
+    app_module.manual_override_from_device = False
     app_module.cache.clear()
     app_module.latest_outside_temp = None
     app_module.store = storage.Store()
@@ -2901,3 +2902,170 @@ class TestMetricsEndpoint:
         response = client.get("/metrics")
         assert response.status_code == 200
         assert b"spa_pool_temperature_celsius" in response.data
+
+
+class TestOverrideStateMatchesControl:
+    """The override timer must report only overrides control() honours.
+
+    spa_manual_override_seconds_remaining, the GUI banner and /status all read
+    manual_override_endtime, so an end time left behind after the override
+    stopped mattering is a lie told to all three -- and to SpaOverrideLeftOn,
+    which pages on it.
+    """
+
+    @staticmethod
+    def _spa(desired):
+        """Build a mock ControlMySpa reporting `desired` as its setpoint."""
+        api = MagicMock()
+        api.current_temp = 35
+        api.desired_temp = desired
+        return api
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_setpoint_return_ends_a_detected_override(self, mock_api_class):
+        """Turning the dial back to a setpoint ends the override it started."""
+        mock_api_class.return_value = self._spa(33)
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+        assert app_module.manual_override_from_device
+        endtime = app_module.manual_override_endtime
+        assert endtime > datetime.datetime.now(tz=datetime.UTC)
+
+        # Somebody puts the spa back on an automatic setpoint well before the
+        # 12 hours are up.
+        mock_api = self._spa(27)
+        mock_api_class.return_value = mock_api
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        assert app_module.manual_override_endtime == datetime.datetime.fromtimestamp(
+            0, tz=datetime.UTC
+        )
+        assert not app_module.manual_override_from_device
+        assert mock_api.desired_temp == 37  # control resumed
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_requested_override_survives_a_setpoint_reading(self, mock_api_class):
+        """/cold asks for TEMP_LOW + 0.5, which int() truncates to TEMP_LOW.
+
+        That reads as an automatic setpoint, so the detection cannot hold this
+        override; only its end time can. It has to be honoured anyway, or the
+        24h the GUI promises is 15 minutes of reality and 24h of metric.
+        """
+        mock_api = self._spa(27.5)
+        mock_api_class.return_value = mock_api
+        with app_module.APP.app_context():
+            app_module._start_override(27.5, 24)  # noqa: SLF001
+        endtime = app_module.manual_override_endtime
+
+        mock_api.desired_temp = 27.5
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        assert app_module.manual_override_endtime == endtime
+        assert not app_module.manual_override_from_device
+        assert mock_api.desired_temp == 27.5  # left alone
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_expired_override_on_a_setpoint_is_forgotten(self, mock_api_class):
+        """An end time in the past is cleared even while on a setpoint.
+
+        Otherwise the next dial turn lands in the expiry branch instead of
+        being detected as a new override.
+        """
+        mock_api = self._spa(27)
+        mock_api_class.return_value = mock_api
+        app_module.manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) - datetime.timedelta(hours=1)
+
+        with app_module.APP.app_context():
+            app_module.set_temp(27)
+
+        assert app_module.manual_override_endtime == datetime.datetime.fromtimestamp(
+            0, tz=datetime.UTC
+        )
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.send_telegram")
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_a_fresh_dial_turn_is_a_new_detection(self, mock_api_class, mock_telegram):
+        """After an override ends, the next dial turn is detected afresh.
+
+        Without the clearing it would still be inside the first override's 12
+        hours, so nothing would be detected and no message sent -- the end
+        time would just carry on counting down.
+        """
+        mock_api_class.return_value = self._spa(33)
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+        mock_api_class.return_value = self._spa(27)
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+        mock_telegram.reset_mock()
+
+        mock_api_class.return_value = self._spa(33)
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        assert any(
+            "Manual override detected" in call.args[0]
+            for call in mock_telegram.call_args_list
+        )
+        assert app_module.manual_override_from_device
+
+
+class TestGaugeRefreshIsolation:
+    """One unfillable gauge must not freeze the rest at a stale value.
+
+    A frozen gauge is worse than a missing one: alerting reads it as a live
+    value, which is how a stuck positive override gauge pages forever.
+    """
+
+    def test_a_failing_gauge_does_not_freeze_the_others(self):
+        """A price key that cannot be counted still leaves the rest current."""
+        app_module.manual_override_endtime = datetime.datetime.now(
+            tz=datetime.UTC
+        ) + datetime.timedelta(hours=2)
+        with app_module.APP.app_context():
+            app_module._refresh_gauges()  # noqa: SLF001
+        assert _gauge_value(_metrics_text()) > 0
+
+        # The override ends, but counting the price hours now blows up.
+        app_module.manual_override_endtime = datetime.datetime.fromtimestamp(
+            0, tz=datetime.UTC
+        )
+        app_module.hourly_prices = {object(): 0.1}
+        with app_module.APP.app_context():
+            app_module._refresh_gauges()  # noqa: SLF001
+
+        assert _gauge_value(_metrics_text()) == 0
+
+    def test_metrics_endpoint_survives_a_failing_gauge(self, client):
+        """/metrics still answers 200 with every family present."""
+        app_module.hourly_prices = {object(): 0.1}
+        response = client.get("/metrics")
+        assert response.status_code == 200
+        body = response.get_data(as_text=True)
+        assert "spa_manual_override_seconds_remaining" in body
+        assert "spa_pool_temperature_celsius" in body
+
+
+def _metrics_text():
+    """Render the current exposition payload."""
+    payload, _ = app_module.metrics.render()
+    return payload.decode()
+
+
+def _gauge_value(text):
+    """Read spa_manual_override_seconds_remaining out of `text`."""
+    return float(
+        next(
+            line.split()[1]
+            for line in text.splitlines()
+            if line.startswith("spa_manual_override_seconds_remaining ")
+        )
+    )

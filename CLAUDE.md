@@ -21,7 +21,7 @@ Temperature, price and outside-temperature history are persisted to SQLite (opti
 - `cooling_k` — estimated cooling constant (Newton's law), updated from temperature history
 - `heating_rate` — estimated °C/h, measured from uncapped heating stretches (clamped to 0.8-3.0, default 1.6 until 3 stretches are seen); `HEATING_RATE` overrides it
 - `temperature_history` — in-memory ring buffer of temp readings (`collections.deque(maxlen=1400)`, about a week at 8 readings/hour); each entry records `current_temp`, `desired_temp`, and `outside_temp`. SQLite is the source of truth; on startup the deque is refilled to capacity with the newest rows. It has to be that deep: the estimators need ~5 cooling periods and 3 heating stretches, which 48h of data does not contain, so a shorter backfill leaves every restart on the default constants for days.
-- `manual_override_endtime` — datetime for manual override expiry
+- `manual_override_endtime` — datetime for manual override expiry, and `manual_override_from_device` recording where the override came from (see Manual Override Logic). The end time is the only answer to "is control paused": the GUI banner, Telegram `/status` and `spa_manual_override_seconds_remaining` all read it, so it must never outlive the pause it describes
 - `latest_outside_temp` — most recent outside air temperature (°C), refreshed hourly
 - `cache` — Flask-Caching SimpleCache for pool temps (15min TTL)
 
@@ -130,4 +130,9 @@ Balboa is down for under an hour several times a month, so neither channel repor
 
 ## Manual Override Logic
 
-When the spa's desired temp doesn't match TEMP_HIGH or TEMP_LOW, the system assumes manual control via physical spa controls and pauses automatic control for 12 hours. The web GUI also allows enabling/disabling override via `/api/override`.
+`_override_pauses_control()` owns the whole state machine; `set_temp()` just asks it whether to leave the spa alone. Two kinds of override, told apart by `manual_override_from_device`, because they end differently:
+
+- **Detected** — the spa's desired temp is neither TEMP_HIGH nor TEMP_LOW, so somebody turned the dial. Pauses automatic control for 12 hours, *and ends the moment the spa is back on an automatic setpoint*, whoever put it there. Holding the timer for the remaining hours would report a pause that is not happening, which is what `SpaOverrideLeftOn` pages on.
+- **Requested** — `/api/override`, `/heat`, `/cold`, Telegram. Runs to its end time regardless of what the spa reports, because the temperature it asks for can be one the detection reads as automatic: `/cold` aims at `TEMP_LOW + 0.5` and `int()` truncates that straight back to TEMP_LOW.
+
+An end time in the past is cleared as soon as it is seen, so the next dial turn is a fresh detection with its full 12 hours rather than landing in the expiry branch.
