@@ -11,6 +11,8 @@ import functools
 import http
 import logging
 import os
+import threading
+import time
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -81,6 +83,17 @@ latest_outside_temp = None  # pylint: disable=invalid-name
 weather_forecast: dict[str, float] = {}
 
 store = storage.Store()  # disabled until init_db() opens SQLITE_PATH
+
+# The logged-in spa client, kept between cycles: see _spa_client(). Both the
+# APScheduler jobs and the Flask request handlers reach set_temp(), so the
+# lock is not optional.
+_spa_api: controlmyspa.ControlMySpa | None = None  # pylint: disable=invalid-name
+# time.monotonic() of the login, 0.0 while there is none
+_spa_api_born = 0.0  # pylint: disable=invalid-name
+_spa_api_lock = threading.Lock()
+# A session outlives its token eventually. The library logs in again on a
+# 401; this is the backstop for an expiry that does not announce itself.
+SPA_SESSION_MAX_AGE = 30 * 60
 
 _EPOCH = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
@@ -520,6 +533,29 @@ def _is_transient(error: BaseException | None) -> bool:
     )
 
 
+def _spa_client(*, fresh: bool = False) -> controlmyspa.ControlMySpa:
+    """Return a logged-in spa client whose state was read just now.
+
+    Building one costs three sequential calls to Balboa (login, spa lookup,
+    dashboard) and only the dashboard read carries anything new, so the
+    client is kept and re-read instead. `fresh` forces a new login, which is
+    what a retry after a failed attempt wants.
+    """
+    global _spa_api, _spa_api_born  # noqa: PLW0603
+    with _spa_api_lock:
+        expired = time.monotonic() - _spa_api_born > SPA_SESSION_MAX_AGE
+        if fresh or _spa_api is None or expired:
+            _spa_api = controlmyspa.ControlMySpa(
+                os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
+            )
+            _spa_api_born = time.monotonic()
+        else:
+            # Every property reads whatever the last refresh stored, so a
+            # cached client without this would steer on a stale temperature.
+            _spa_api.refresh()
+        return _spa_api
+
+
 def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
     """Update the pool temperature.
 
@@ -540,10 +576,8 @@ def set_temp(temp: float, *, skip_override_detection: bool = False) -> None:
             before_sleep=tenacity.before_sleep_log(APP.logger, logging.INFO),
         ):
             with attempt:
-                api = controlmyspa.ControlMySpa(
-                    os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
-                )
-                info = getattr(api, "_info", None)  # pylint: disable=protected-access
+                api = _spa_client(fresh=attempt.retry_state.attempt_number > 1)
+                info = api.info
                 sentry_sdk.set_context(
                     "controlmyspa_info",
                     {"info_keys": list(info.keys())}

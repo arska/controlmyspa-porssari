@@ -33,6 +33,10 @@ def _reset_state():
     app_module.cooling_k = app_module.DEFAULT_COOLING_K
     app_module.heating_rate = app_module.DEFAULT_HEATING_RATE
     app_module.weather_forecast = {}
+    # A cached client is a mock from the previous test, and reusing it would
+    # skip the construction the next test is about to assert on.
+    app_module._spa_api = None  # noqa: SLF001
+    app_module._spa_api_born = 0.0  # noqa: SLF001
     yield
 
 
@@ -2925,7 +2929,8 @@ class TestOverrideStateMatchesControl:
     @patch("app.controlmyspa.ControlMySpa")
     def test_setpoint_return_ends_a_detected_override(self, mock_api_class):
         """Turning the dial back to a setpoint ends the override it started."""
-        mock_api_class.return_value = self._spa(33)
+        mock_api = self._spa(33)
+        mock_api_class.return_value = mock_api
         with app_module.APP.app_context():
             app_module.set_temp(37)
         assert app_module.manual_override_from_device
@@ -2933,9 +2938,9 @@ class TestOverrideStateMatchesControl:
         assert endtime > datetime.datetime.now(tz=datetime.UTC)
 
         # Somebody puts the spa back on an automatic setpoint well before the
-        # 12 hours are up.
-        mock_api = self._spa(27)
-        mock_api_class.return_value = mock_api
+        # 12 hours are up. The client is reused between cycles, so the next
+        # refresh is how the app learns about it.
+        mock_api.refresh.side_effect = lambda: setattr(mock_api, "desired_temp", 27)
         with app_module.APP.app_context():
             app_module.set_temp(37)
 
@@ -2999,15 +3004,18 @@ class TestOverrideStateMatchesControl:
         hours, so nothing would be detected and no message sent -- the end
         time would just carry on counting down.
         """
-        mock_api_class.return_value = self._spa(33)
+        # One client across all three cycles, as in production: each refresh
+        # is what carries the new setpoint.
+        mock_api = self._spa(33)
+        mock_api_class.return_value = mock_api
         with app_module.APP.app_context():
             app_module.set_temp(37)
-        mock_api_class.return_value = self._spa(27)
+        mock_api.refresh.side_effect = lambda: setattr(mock_api, "desired_temp", 27)
         with app_module.APP.app_context():
             app_module.set_temp(37)
         mock_telegram.reset_mock()
 
-        mock_api_class.return_value = self._spa(33)
+        mock_api.refresh.side_effect = lambda: setattr(mock_api, "desired_temp", 33)
         with app_module.APP.app_context():
             app_module.set_temp(37)
 
@@ -3069,3 +3077,117 @@ def _gauge_value(text):
             if line.startswith("spa_manual_override_seconds_remaining ")
         )
     )
+
+
+class TestClientContract:
+    """The installed library must have the API set_temp() drives.
+
+    Every other test in this file mocks ControlMySpa, so a pinned library
+    without refresh() or info passes the whole suite and then crashes in the
+    pod on the first control cycle. This is the only test that looks at what
+    is actually installed.
+    """
+
+    def test_installed_client_can_refresh(self):
+        """_spa_client() re-reads a cached client with refresh()."""
+        assert callable(getattr(app_module.controlmyspa.ControlMySpa, "refresh", None))
+
+    def test_installed_client_exposes_info(self):
+        """set_temp() reads diagnostics off the public property."""
+        assert isinstance(
+            getattr(app_module.controlmyspa.ControlMySpa, "info", None), property
+        )
+
+
+class TestSpaClientReuse:
+    """Tests for the cached, logged-in ControlMySpa client."""
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_reuses_the_logged_in_client(self, mock_api_class):
+        """A second cycle refreshes instead of logging in again.
+
+        Constructing the client costs a login, a spa lookup and a dashboard
+        read; only the dashboard read carries new information.
+        """
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+            app_module.set_temp(37)
+
+        assert mock_api_class.call_count == 1
+        assert mock_api.refresh.call_count == 1
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_first_cycle_does_not_refresh(self, mock_api_class):
+        """The constructor already read the dashboard, so refreshing is waste."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        assert mock_api.refresh.call_count == 0
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_a_failed_attempt_logs_in_again(self, mock_api_class, fast_retries):
+        """A retry gets a clean client, as every attempt did before caching."""
+        stale = MagicMock()
+        stale.current_temp = 34.5
+        stale.desired_temp = 37
+        stale.refresh.side_effect = requests.exceptions.ConnectionError("dropped")
+        fresh = MagicMock()
+        fresh.current_temp = 34.5
+        fresh.desired_temp = 37
+        mock_api_class.side_effect = [stale, fresh]
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+            app_module.set_temp(37)
+
+        assert mock_api_class.call_count == 2
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_an_old_session_is_replaced(self, mock_api_class):
+        """The age cap is the backstop for an expiry the library cannot see."""
+        mock_api = MagicMock()
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api_class.return_value = mock_api
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+            app_module._spa_api_born -= app_module.SPA_SESSION_MAX_AGE + 1  # noqa: SLF001
+            app_module.set_temp(37)
+
+        assert mock_api_class.call_count == 2
+        assert mock_api.refresh.call_count == 0
+
+    @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
+    @patch("app.sentry_sdk.set_context")
+    @patch("app.controlmyspa.ControlMySpa")
+    def test_reads_diagnostics_off_the_public_property(
+        self, mock_api_class, mock_set_context
+    ):
+        """The spec limits the client to its public API, and _info is not on it."""
+        mock_api = MagicMock(spec=["current_temp", "desired_temp", "info", "refresh"])
+        mock_api.current_temp = 34.5
+        mock_api.desired_temp = 37
+        mock_api.info = {"currentState": {}, "serialNumber": "x"}
+        mock_api_class.return_value = mock_api
+
+        with app_module.APP.app_context():
+            app_module.set_temp(37)
+
+        mock_set_context.assert_called_once_with(
+            "controlmyspa_info", {"info_keys": ["currentState", "serialNumber"]}
+        )

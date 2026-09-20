@@ -3,7 +3,7 @@ name = "controlmyspa-porssari"
 version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
-    "controlmyspa>=4.1.0",
+    "controlmyspa>=4.2.0",  # refresh() and info: see _spa_client()
     "flask",
     "apscheduler",
     "python-dotenv",
