@@ -106,6 +106,10 @@ ruff format .
 
 Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to avoid external API calls. Global state is reset between tests via an autouse fixture.
 
+Because every spa test mocks `ControlMySpa`, a library pin missing the API the app drives passes the whole suite and then crash-loops in the pod on the first control cycle. `TestClientContract` is the only test that inspects what is actually installed; extend it whenever `app.py` starts using a new member of the library.
+
+The spa client is cached between cycles, so a test cannot simulate a changed reading by swapping `mock_api_class.return_value`; the app never sees the new object. Deliver it through `mock_api.refresh.side_effect`, which is how it arrives in production. The autouse fixture clears `_spa_api`.
+
 `SpaSimulator` (bottom of `test_app.py`) runs the real `calculate_schedule()` + `control()` loop every simulated 15 minutes against a thermal model (Newton cooling, `heating_rate` °C/h, readings quantised to the spa's 0.5°C sensor resolution). It patches `app.datetime` with a controllable clock — patching only app's namespace, not the global `datetime` module — and reproduces spot-hinta.fi's publication schedule (tomorrow's prices appear at 14:00), which is what surfaces re-planning bugs that static single-call tests cannot. `sim.cheapest_possible_cost()` gives the brute-force optimum for the hours actually consumed, so tests can assert on cost, not just on which hours were picked. The two defects it originally pinned as `xfail` (daytime top-offs, setpoint cycling from 0.5°C sensor ticks) are fixed; the tests now assert the cost stays within 10% of the brute-force optimum and that a day needs at most 3 setpoint starts.
 
 ## Monitoring and Deployment
@@ -119,7 +123,8 @@ Tests in `test_app.py` mock `controlmyspa.ControlMySpa` and `requests.get` to av
 ## External APIs
 
 1. **spot-hinta.fi** (`https://api.spot-hinta.fi/Today` and `/DayForward`): Returns 15-min interval Nordpool spot prices with tax for Finland. `update_prices()` fetches both endpoints and averages to PRICE_INTERVAL-minute slots.
-2. **ControlMySpa** (via `controlmyspa` package): Authenticates to `iot.controlmyspa.com`, reads/writes spa temperatures. Retries with exponential backoff (tenacity, up to 10 minutes).
+2. **ControlMySpa** (via `controlmyspa` package): Authenticates to `iot.controlmyspa.com`, reads/writes spa temperatures. Retries with exponential backoff (tenacity, up to 10 minutes). `_spa_client()` keeps one logged-in client and calls `refresh()` each cycle, because constructing one costs three sequential calls (login, `/spas/owned`, dashboard) and only the dashboard read carries anything new.
+   - **The library is ours**: `arska/controlmyspa`, checked out at `~/dev/controlmyspa`. When the app needs something it does not expose, add it there and release it, rather than reaching for a private or working around it in `app.py`. `api._info` and `_get_info()` were the app's only private accesses; 4.2.0 replaced them with `info` and `refresh()`. Upstream lands first: a library change needs a release, then `pyproject.toml` and `uv lock --refresh-package controlmyspa`, before the app PR that depends on it can merge.
 3. **Open-Meteo** (`https://api.open-meteo.com/v1/forecast`): Free, keyless weather API. `update_weather()` reads `current.temperature_2m` for WEATHER_LAT/WEATHER_LON. On failure the last value is kept.
 
 ## Alerting
