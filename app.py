@@ -12,7 +12,6 @@ import http
 import logging
 import os
 import threading
-import time
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -88,12 +87,7 @@ store = storage.Store()  # disabled until init_db() opens SQLITE_PATH
 # APScheduler jobs and the Flask request handlers reach set_temp(), so the
 # lock is not optional.
 _spa_api: controlmyspa.ControlMySpa | None = None  # pylint: disable=invalid-name
-# time.monotonic() of the login, 0.0 while there is none
-_spa_api_born = 0.0  # pylint: disable=invalid-name
 _spa_api_lock = threading.Lock()
-# A session outlives its token eventually. The library logs in again on a
-# 401; this is the backstop for an expiry that does not announce itself.
-SPA_SESSION_MAX_AGE = 30 * 60
 
 _EPOCH = datetime.datetime.fromtimestamp(0, tz=datetime.UTC)
 # set to datetime.datetime.now(tz=datetime.UTC) to disable manual override on startup
@@ -540,15 +534,18 @@ def _spa_client(*, fresh: bool = False) -> controlmyspa.ControlMySpa:
     dashboard) and only the dashboard read carries anything new, so the
     client is kept and re-read instead. `fresh` forces a new login, which is
     what a retry after a failed attempt wants.
+
+    Nothing rebuilds it on a timer. An expiry that arrives as a 401 the
+    library logs in again for, and one that arrives as anything else raises,
+    which the retry above turns into `fresh`. A timer would only add back
+    the three-call chain this function exists to remove.
     """
-    global _spa_api, _spa_api_born  # noqa: PLW0603
+    global _spa_api  # noqa: PLW0603
     with _spa_api_lock:
-        expired = time.monotonic() - _spa_api_born > SPA_SESSION_MAX_AGE
-        if fresh or _spa_api is None or expired:
+        if fresh or _spa_api is None:
             _spa_api = controlmyspa.ControlMySpa(
                 os.getenv("CONTROLMYSPA_USER"), os.getenv("CONTROLMYSPA_PASS")
             )
-            _spa_api_born = time.monotonic()
         else:
             # Every property reads whatever the last refresh stored, so a
             # cached client without this would steer on a stale temperature.
