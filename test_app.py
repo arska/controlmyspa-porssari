@@ -36,7 +36,6 @@ def _reset_state():
     # A cached client is a mock from the previous test, and reusing it would
     # skip the construction the next test is about to assert on.
     app_module._spa_api = None  # noqa: SLF001
-    app_module._spa_api_born = 0.0  # noqa: SLF001
     yield
 
 
@@ -3157,20 +3156,24 @@ class TestSpaClientReuse:
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.controlmyspa.ControlMySpa")
-    def test_an_old_session_is_replaced(self, mock_api_class):
-        """The age cap is the backstop for an expiry the library cannot see."""
+    def test_nothing_rebuilds_the_client_on_a_timer(self, mock_api_class):
+        """Only a restart or a failure logs in again, never the clock.
+
+        A timed rebuild is the three-call chain this whole mechanism exists
+        to remove, and an expiry arrives as a 401 or as an exception either
+        way.
+        """
         mock_api = MagicMock()
         mock_api.current_temp = 34.5
         mock_api.desired_temp = 37
         mock_api_class.return_value = mock_api
 
         with app_module.APP.app_context():
-            app_module.set_temp(37)
-            app_module._spa_api_born -= app_module.SPA_SESSION_MAX_AGE + 1  # noqa: SLF001
-            app_module.set_temp(37)
+            for _ in range(20):
+                app_module.set_temp(37)
 
-        assert mock_api_class.call_count == 2
-        assert mock_api.refresh.call_count == 0
+        assert mock_api_class.call_count == 1
+        assert mock_api.refresh.call_count == 19
 
     @patch.dict("os.environ", {"TEMP_HIGH": "37", "TEMP_LOW": "27"})
     @patch("app.sentry_sdk.set_context")
