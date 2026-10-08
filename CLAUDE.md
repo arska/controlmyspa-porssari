@@ -133,6 +133,8 @@ Alerts about the spa live in Prometheus, not in the app: `deploy/prometheusrule.
 
 Balboa is down for under an hour several times a month, so neither channel reports that. `SpaApiUnreachable` waits six hours, and `set_temp()` sends an exhausted retry to Sentry only when the cause will not fix itself (a 4xx, a response of the wrong shape). Timeouts, connection errors, 5xx and `SpaOfflineError` go to the log and `spa_api_failures_total` only.
 
+spot-hinta.fi follows the same rule in `pricing.fetch_entries()`: a 429, a 5xx, a timeout or a connection error is logged as a warning, because the next fetch is 15 minutes away and `SpaPricesStale` reports an outage that lasts. Any other 4xx or an unparsable body is logged as an error, which Sentry turns into an event.
+
 ## Manual Override Logic
 
 `_override_pauses_control()` owns the whole state machine; `set_temp()` just asks it whether to leave the spa alone. Two kinds of override, told apart by `manual_override_from_device`, because they end differently:

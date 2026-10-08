@@ -16,6 +16,8 @@ SPOT_HINTA_API = "https://api.spot-hinta.fi"
 # Named tuple for the except clause — ruff's formatter strips inline parens.
 FETCH_ERRORS = (requests.exceptions.RequestException, ValueError)
 NOT_FOUND = 404
+TOO_MANY_REQUESTS = 429
+SERVER_ERROR = 500
 NIGHT_START = 22
 NIGHT_END = 7
 
@@ -36,6 +38,24 @@ def margin(hour: int) -> float:
     return day
 
 
+def _is_outage(error: BaseException) -> bool:
+    """Whether a spot-hinta.fi failure ends on its own.
+
+    A rate limit, a server error, a timeout or a dropped connection is gone by
+    the next fetch, 15 minutes later, and that interval is all the backoff a
+    429 asks for. Any other 4xx or an unparsable body stays broken until the
+    code changes.
+    """
+    if isinstance(error, requests.exceptions.HTTPError):
+        return error.response is not None and (
+            error.response.status_code == TOO_MANY_REQUESTS
+            or error.response.status_code >= SERVER_ERROR
+        )
+    return isinstance(
+        error, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)
+    )
+
+
 def fetch_entries() -> list[dict]:
     """Fetch raw 15-min price entries from spot-hinta.fi /Today and /DayForward."""
     entries: list[dict] = []
@@ -48,8 +68,13 @@ def fetch_entries() -> list[dict]:
                 continue
             resp.raise_for_status()
             entries.extend(resp.json())
-        except FETCH_ERRORS:
-            logger.exception("failed to fetch %s", endpoint)
+        except FETCH_ERRORS as error:
+            if _is_outage(error):
+                # Sentry makes an event of every ERROR record. Remembered
+                # prices cover the gap and SpaPricesStale reports a long one.
+                logger.warning("failed to fetch %s: %r", endpoint, error)
+            else:
+                logger.exception("failed to fetch %s", endpoint)
     return entries
 
 

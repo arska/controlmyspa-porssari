@@ -1780,6 +1780,64 @@ class TestUpdatePrices:
             0.0591
         )
 
+    @staticmethod
+    def _failing_response(status_code):
+        """Build a response whose raise_for_status() raises for status_code."""
+        response = MagicMock(status_code=status_code)
+        response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            response=response
+        )
+        return response
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            pytest.param(429, id="rate-limited"),
+            pytest.param(503, id="server-error"),
+            pytest.param(requests.exceptions.ConnectTimeout(), id="timeout"),
+            pytest.param(requests.exceptions.ConnectionError(), id="connection"),
+        ],
+    )
+    @patch("app.requests.get")
+    def test_outage_is_logged_below_error(self, mock_get, failure, caplog):
+        """A failure the next fetch recovers from must not reach Sentry.
+
+        Sentry turns every ERROR record into an event. The next run is 15
+        minutes away and SpaPricesStale reports an outage that lasts.
+        """
+        today_response = MagicMock(status_code=200)
+        today_response.json.return_value = [
+            {"DateTime": "2026-07-18T10:00:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:15:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:30:00+03:00", "PriceWithTax": 0.02},
+            {"DateTime": "2026-07-18T10:45:00+03:00", "PriceWithTax": 0.02},
+        ]
+        tomorrow = (
+            self._failing_response(failure) if isinstance(failure, int) else failure
+        )
+        mock_get.side_effect = [today_response, tomorrow]
+
+        with app_module.APP.app_context(), caplog.at_level("INFO"):
+            app_module.update_prices()
+
+        records = [r for r in caplog.records if "/DayForward" in r.getMessage()]
+        assert [r.levelname for r in records] == ["WARNING"]
+        # The endpoint that answered still counts.
+        assert "2026-07-18T10:00:00+03:00" in app_module.hourly_prices
+
+    @patch("app.requests.get")
+    def test_rejected_request_is_logged_as_error(self, mock_get, caplog):
+        """A 4xx other than 429 stays broken until the code changes: report it."""
+        today_response = MagicMock(status_code=200)
+        today_response.json.return_value = []
+        mock_get.side_effect = [today_response, self._failing_response(403)]
+
+        with app_module.APP.app_context(), caplog.at_level("INFO"):
+            app_module.update_prices()
+
+        records = [r for r in caplog.records if "/DayForward" in r.getMessage()]
+        assert [r.levelname for r in records] == ["ERROR"]
+
 
 class TestPriceScheduleAPI:
     """Tests for price-based schedule in API and Telegram."""
